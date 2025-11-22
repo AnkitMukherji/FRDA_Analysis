@@ -1,12 +1,8 @@
----
+̥---
 title: "RNA-seq FRDA Analysis Pipeline"
 author: "Ankit Mukherjee"
 output: html_document
 ---
-
-```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
-``` 
 
 # Load Libraries
 ```{r}
