@@ -424,3 +424,8 @@ batch8_9_result <- dge(counts = count_data_frda_batch8_9,
                       filename = "res/res_batch8_9_patients_vs_controls.xlsx",
                       filename_volcano = "volcano_plot/volcano_batch8_9_patients_vs_controls.jpeg")
 ```
+
+# Pathway Analysis for batch 8 and 9 DGE results
+```{r, eval=FALSE}
+library(clusterProfiler)
+library(org.Hs.eg.db)
