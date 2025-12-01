@@ -8,13 +8,24 @@ output: html_document
 ```{r}
 library(DESeq2)
 library(limma)
+library(sva)
 library(tidyverse)
 library(readxl)
 library(writexl)
+library(openxlsx)
 library(ggplot2)
 library(BiocParallel)
 library(patchwork)
 library(ggrepel)
+library(GSEABase)
+library(Biobase)
+library(GSVA)
+library(gprofiler2)
+library(clusterProfiler)
+library(msigdbr)
+library(enrichplot)
+library(org.Hs.eg.db)
+library(ComplexHeatmap)
 ```
 
 # Load RDS Files
@@ -304,6 +315,11 @@ dge <- function(counts, meta, design, filename, filename_volcano) {
                                 colData = meta,
                                 design = design)
   dds <- DESeq(dds, parallel = FALSE)
+  save_dds <- readline(prompt = "Save DESeqDataSet object? (yes/no): ")
+  if (tolower(save_dds) == "yes") {
+    dds_filename <- readline(prompt = "Enter filename to save DESeqDataSet object (e.g., dds.rds): ")
+    saveRDS(dds, dds_filename)
+  }
   
   cat("\nCoefficients:\n")
   print(resultsNames(dds))
@@ -358,10 +374,10 @@ dge <- function(counts, meta, design, filename, filename_volcano) {
 
 # Finding differences between patients of Batches 1 to 7 and Batches 8 and 9
 ```{r, eval=FALSE}
-metadata_frda_remove_fxn_abnormal <- metadata_frda_remove_fxn_abnormal %>%
+metadata_frda_remove_fxn_abnormal <- metadata_frda_remove_fxn_abnormal |>
   mutate(Batch_group = ifelse(Batch %in% 1:7, "Batch 1-7", "Batch 8-9"),
-         GAA1_GAA2 = GAA1 + GAA2) %>%
-  filter(Condition == "Patient") %>%
+         GAA1_GAA2 = GAA1 + GAA2) |>
+  filter(Condition == "Patient") |>
   mutate(across(c(Age, DD, Onset, GAA1, GAA2, GAA1_GAA2), as.numeric))
 
 plot_box_jitter_vars <- function(data, y_vars, group_col = "Batch_group") {
@@ -404,28 +420,479 @@ ggsave("QC/QC/reads_aligned.jpeg",
 ```
 
 # DE for batch 8 and 9 patients and controls
-```{r, eval=FALSE}
+```{r}
 # Selecting samples that have million mapped reads to the transcriptome > 5 
 # and million mapped fragments to the exonic region of the genome > 10
 
 qc_result <- read_excel("QC/qc_dragen_salmon.xlsx", skip = 1)
-samples_qualified <- qc_result %>%
-  filter(`M Aligned` > 5 & `Exonic` > 10) %>% # exonic info available for batch 8 and 9 only
+samples_qualified <- qc_result |>
+  filter(`M Aligned` > 5 & `Exonic` > 10) |> # exonic info available for batch 8 and 9 only
   pull(Sample)
 
-metadata_frda_batch8_9 <- metadata_frda %>%
+metadata_frda_batch8_9 <- metadata_frda |>
   filter(Batch %in% c(8, 9) & rownames(metadata_frda) %in% samples_qualified)
 metadata_frda_batch8_9$Batch <- factor(metadata_frda_batch8_9$Batch)
 count_data_frda_batch8_9 <- count_data_filtered[, rownames(metadata_frda_batch8_9)]
 
-batch8_9_result <- dge(counts = count_data_frda_batch8_9, 
-                      meta = metadata_frda_batch8_9,
-                      design = ~ Batch + Sex + Age_scaled + Condition,
-                      filename = "res/res_batch8_9_patients_vs_controls.xlsx",
-                      filename_volcano = "volcano_plot/volcano_batch8_9_patients_vs_controls.jpeg")
+# batch8_9_result <- dge(counts = count_data_frda_batch8_9, 
+#                       meta = metadata_frda_batch8_9,
+#                       design = ~ Batch + Sex + Age_scaled + Condition,
+#                       filename = "res/res_batch8_9_patients_vs_controls.xlsx",
+#                       filename_volcano = "volcano_plot/volcano_batch8_9_patients_vs_controls.jpeg")
 ```
 
 # Pathway Analysis for batch 8 and 9 DGE results
+```{r}
+dge_batch_8_9 <- read_xlsx("res/res_batch8_9_patients_vs_controls.xlsx")
+top_genes <- dge_batch_8_9 |> 
+  filter(padj < 0.01 & abs(log2FoldChange) >= 1) |> 
+  pull(gene_names)
+```
+
+# GO enrichment (Overrepresentation analysis using hypergeometric test)
 ```{r, eval=FALSE}
-library(clusterProfiler)
-library(org.Hs.eg.db)
+go_gprofiler2 <- gost(query = top_genes,
+                  organism = "hsapiens",
+                  sources = c("GO:BP", "GO:MF", "GO:CC", "KEGG", "REAC", "TF"),
+                  correction_method = "fdr",
+                  user_threshold = 0.05,
+                  significant = TRUE)
+
+gostplot(go_gprofiler2, capped = TRUE, interactive = TRUE)
+
+go_clusterprof <- enrichGO(gene = top_genes,
+                            OrgDb = org.Hs.eg.db,
+                            keyType = "SYMBOL",
+                            ont = "ALL",
+                            pAdjustMethod = "BH",
+                            pvalueCutoff = 0.05,
+                            qvalueCutoff = 0.05)
+
+dotplot(go_clusterprof, showCategory = 20)
+ggsave("pathway_enrichment/go_enrichment_batch8_9_patients_vs_controls.jpeg",
+       plot = last_plot(),
+       device = "jpeg",
+       units = "in",
+       height = 8,
+       width = 12,
+       dpi = 600)
+
+write_xlsx(as.data.frame(go_clusterprof), "pathway_enrichment/go_enrichment_batch8_9_patients_vs_controls.xlsx")
+```
+
+# Enquire GSEA gene sets
+```{r, eval=FALSE}
+msigdbr::msigdbr_species()
+msigdbr_list <- msigdbr(species = "Homo sapiens")
+
+msigdbr_list |> 
+  distinct(gs_collection, gs_subcollection) |> 
+  arrange(gs_collection, gs_subcollection) |> 
+  View()
+```
+
+# GSEA function
+```{r}
+run_multi_gsea <- function(dge_df,
+                           sets = c("CP:KEGG_LEGACY", "CP:KEGG_MEDICUS", "CP:REACTOME",
+                                    "TFT:GTRD", "TFT:TFT_LEGACY", "GO:BP", "GO:CC", "GO:MF", "IMMUNESIGDB"),
+                           output_prefix = "pathway_enrichment",
+                           species = "Homo sapiens") {
+  
+  suppressPackageStartupMessages({
+    library(msigdbr)
+    library(clusterProfiler)
+    library(tidyverse)
+    library(openxlsx)
+    library(ggplot2)
+    library(patchwork)
+    library(enrichplot)
+  })
+
+  gene_sets <- lapply(setNames(sets, sets), function(x){
+    msigdbr(species = species, subcollection = x)
+  })
+  
+  # Filtering genes for those present in DESeq results
+  gene_sets <- lapply(gene_sets, function(sets){
+    sets[sets$gene_symbol %in% dge_df$gene_names, ]
+  })
+
+  filtered_df <- dge_df |> 
+    filter(!is.na(log2FoldChange), !is.na(padj)) |>
+    arrange(desc(abs(log2FoldChange))) |> 
+    distinct(gene_names, .keep_all = TRUE)
+
+  # Replacing padj = 0
+  filtered_df <- filtered_df |> 
+    mutate(padj = ifelse(padj == 0, .Machine$double.xmin, padj))
+
+  # Ranking metric: sign(LFC) x –log10(padj)
+  ranking_vector <- sign(filtered_df$log2FoldChange) * -log10(filtered_df$padj)
+  names(ranking_vector) <- filtered_df$gene_names
+  ranking_vector <- ranking_vector[is.finite(ranking_vector)]
+  ranking_vector <- sort(ranking_vector, decreasing = TRUE)
+  # Adding tiny jitter only if ties are present
+  if (any(duplicated(ranking_vector))) {
+    ranking_vector <- ranking_vector + rnorm(length(ranking_vector), 0, 1e-8)
+    ranking_vector <- sort(ranking_vector, decreasing = TRUE)
+  }
+
+  gsea_results <- lapply(names(gene_sets), function(set_name){
+    message(paste0("Running: ", set_name))
+    
+    gs_df <- gene_sets[[set_name]]
+    
+    gsea_res <- GSEA(
+        geneList = ranking_vector,
+        TERM2GENE = gs_df |> select(gs_name, gene_symbol),
+        minGSSize = 10,
+        maxGSSize = 500,
+        pvalueCutoff = 0.05,
+        pAdjustMethod = "BH",
+        eps = 0,
+        nPermSimple = 10000,
+        seed = TRUE
+      )
+    
+    if (is.null(gsea_res) || nrow(gsea_res@result) == 0) {
+      message(paste0("No significant pathways in ", set_name))
+      return(NULL)
+    }
+    
+    df <- gsea_res@result |> arrange(p.adjust)
+    df$Description <- stringr::str_trunc(df$Description, width = 50)
+    # Top pathway
+    top_path <- df$ID[1]
+    
+    # Bubble plot
+    if (nrow(df) >= 1) {
+      p1 <- df |> 
+        slice(1:min(20, nrow(df))) |>
+        ggplot(aes(x = NES, y = reorder(Description, NES),
+                   size = setSize, fill = p.adjust)) +
+        geom_point(shape = 21) +
+        theme_minimal() +
+        scale_fill_viridis_c(trans = "log10") +
+        ggtitle(paste0(set_name, " — Bubble Plot")) +
+        xlab("NES") + ylab("")
+      
+      ggsave(
+        paste0(output_prefix, "/GSEA_", gsub(":", "_", set_name), "_bubble.png"),
+        p1, width = 10, height = 6
+      )
+    }
+    
+    # Running score plot
+    p2 <- gseaplot2(
+      gsea_res, geneSetID = top_path,
+      title = paste0(set_name, ": ", df$Description[1])
+    )
+    
+    ggsave(
+      paste0(output_prefix, "/GSEA_", gsub(":", "_", set_name), "_running_score.png"),
+      p2, width = 8, height = 6
+    )
+    
+    return(gsea_res@result)
+  })
+  
+  names(gsea_results) <- gsub(":", "_", sets)
+  write.xlsx(gsea_results, paste0(output_prefix, "/GSEA_results.xlsx"))
+  
+  return(gsea_results)
+}
+```
+
+# Running GSEA for batch 8 and 9 DGE results
+```{r, eval=FALSE}
+gsea_batch8_9 <- run_multi_gsea(dge_df = dge_batch_8_9,
+                                 sets = c("CP:KEGG_LEGACY", "CP:KEGG_MEDICUS", "CP:REACTOME",
+                                          "TFT:GTRD", "TFT:TFT_LEGACY", "GO:BP", "GO:CC", "GO:MF", "IMMUNESIGDB"),
+                                 output_prefix = "pathway_enrichment",
+                                 species = "Homo sapiens")
+```
+
+# GSVA function
+```{r}
+run_gsva_pipeline <- function(
+  vst_object,
+  msigdb_list = c("CP:KEGG_LEGACY", "CP:KEGG_MEDICUS", "CP:REACTOME",
+                  "TFT:GTRD", "TFT:TFT_LEGACY", "GO:BP", "GO:CC", "GO:MF", "IMMUNESIGDB"),
+  output_excel = "GSVA_results.xlsx",
+  output_dir = "pathway_enrichment",
+  assay_name = "counts",
+  kcdf_mode = "Gaussian"
+) {
+
+  suppressPackageStartupMessages({
+    library(GSVA)
+    library(SummarizedExperiment)
+    library(msigdbr)
+    library(limma)
+    library(sva)
+    library(ComplexHeatmap)
+    library(circlize)
+    library(RColorBrewer)
+    library(openxlsx)
+    library(tidyverse)
+    library(grid)
+  })
+
+  # ensure output dir
+  if (!dir.exists(output_dir)) dir.create(output_dir, recursive = TRUE)
+
+  wb <- createWorkbook()
+
+  message("Available columns in colData(vst_object):")
+  print(colnames(colData(vst_object)))
+
+  ## Ask user for design (variables used to build model)
+  design_vars <- readline(prompt =
+    "Enter variables for the design matrix (e.g. 'Batch + Sex + Age + Condition'): ")
+  design_formula <- as.formula(paste0("~ ", design_vars))
+
+  ## Ask user for annotation column (for heatmap)
+  annot_col <- readline(prompt =
+    "Enter the column name in colData(vst_object) to color in the heatmap (e.g. 'Condition'): ")
+  if (!(annot_col %in% colnames(colData(vst_object)))) {
+    stop("Annotation column not found in colData(vst_object). Aborting.")
+  }
+  annot_values <- unique(as.character(colData(vst_object)[[annot_col]]))
+  message("Annotation groups detected:")
+  print(annot_values)
+
+  ## Ask user for annotation colors (produce named character vector)
+  annot_colors <- character(length(annot_values))
+  names(annot_colors) <- annot_values
+  for (val in annot_values) {
+    col_in <- readline(prompt = paste0("Enter color for group '", val,
+                                       "' (e.g. 'salmon' or 'lightgreen') [press Enter to default 'grey']: "))
+    if (col_in == "") col_in <- "grey"
+    annot_colors[val] <- col_in
+  }
+
+  ## Build model matrices once from vst_object
+  mod <- model.matrix(design_formula, colData(vst_object))
+  mod0 <- model.matrix(~1, colData(vst_object))
+
+  message("Available coefficients from the model (will be tested):")
+  print(colnames(mod))
+  coef_user <- readline(prompt = "Enter coefficient to test (exact column name, e.g. 'ConditionPatient'): ")
+  if (!(coef_user %in% colnames(mod))) {
+    hits <- grep(coef_user, colnames(mod), value = TRUE)
+    if (length(hits) == 0) stop("Coefficient not found in model columns. Aborting.")
+    message("Your input matched the following column(s): ", paste(hits, collapse = ", "))
+    coef_user <- hits[1]
+  }
+
+  ## color scale for heatmap rows
+  pwyexpcol <- colorRampPalette(brewer.pal(10, "RdBu"))(256)
+  pwyexpcol <- rev(pwyexpcol)
+
+  results_list <- list()
+
+  for (collection in msigdb_list) {
+    message("\nProcessing collection: ", collection, "\n")
+
+    # cleaned name for files
+    collection_clean <- gsub("[^A-Za-z0-9_]", "_", collection)
+    collection_clean <- substr(collection_clean, 1, 31)
+
+    msig_df <- tryCatch(
+      msigdbr(species = "Homo sapiens", subcollection = collection),
+      error = function(e1) tryCatch(msigdbr(species = "Homo sapiens", subcollection = collection),
+                                   error = function(e2) NULL)
+    )
+    if (is.null(msig_df) || nrow(msig_df) == 0) {
+      warning("msigdbr could not find collection '", collection, "'. Skipping.")
+      next
+    }
+
+    gene_sets_list <- split(msig_df$gene_symbol, msig_df$gs_name)
+    gene_sets_list <- lapply(gene_sets_list, function(pathway) intersect(pathway, rownames(vst_object)))
+    gene_sets_list <- gene_sets_list[sapply(gene_sets_list, length) >= 1] # drop empty gene-sets
+
+    if (length(gene_sets_list) == 0) {
+      warning("No overlapping gene sets between collection '", collection, "' and vst_object. Skipping.")
+      next
+    }
+
+    ## GSVA
+    gsvapar <- gsvaParam(
+      vst_object,
+      geneSets = gene_sets_list,
+      assay = assay_name,
+      kcdf = kcdf_mode,
+      maxDiff = TRUE,
+      absRanking = FALSE
+    )
+
+    es <- gsva(gsvapar)
+
+    ## Save GSVA full matrix to workbook sheet
+    gsva_df <- as.data.frame(assay(es)) |> rownames_to_column("Pathway")
+    addWorksheet(wb, sheetName = collection_clean)
+    writeData(wb, sheet = collection_clean, gsva_df)
+
+    ## copy global model matrix and use locally
+    mod_local <- mod
+    mod0_local <- mod0
+
+    ## SVA (estimate surrogate variables from GSVA scores) to estimate sample-level heterogeneity
+    sv <- sva(assay(es), mod_local, mod0_local)
+    mod_local <- cbind(mod_local, sv$sv)
+
+    ## Fit limma
+    fit <- lmFit(assay(es), mod_local)
+    fit.eb <- eBayes(fit, robust = TRUE)
+    gssizes <- geneSetSizes(es)
+    fit.eb.trend <- eBayes(fit.eb, robust = TRUE, trend = gssizes)
+
+    tt <- topTable(fit.eb.trend, coef = coef_user, n = Inf)
+    DEpwys <- rownames(tt)[!is.na(tt$adj.P.Val) & tt$adj.P.Val <= 0.05]
+
+    if (length(DEpwys) == 0) {
+      message("No DE pathways found (FDR <= 0.05) for collection: ", collection)
+      results_list[[collection_clean]] <- list(GSVA_matrix = assay(es), DE_table = tt, DE_matrix = NULL)
+      next
+    }
+
+    message("Found ", length(DEpwys), " DE pathways for collection: ", collection)
+
+    ## find condition columns in mod_local
+    cond_cols <- which(colnames(mod_local) == coef_user)
+    if (length(cond_cols) == 0) {
+      ## try to infer variable name (e.g., ConditionPatient -> Condition)
+      var_hint <- sub("([A-Za-z0-9_.-]+).*", "\\1", coef_user)
+      cond_cols <- grep(paste0("^", var_hint), colnames(mod_local))
+    }
+    if (length(cond_cols) == 0) stop("Cannot determine condition column(s) for coef: ", coef_user)
+
+    # covariates: drop intercept (col 1) and condition columns
+    all_cols <- seq_len(ncol(mod_local))
+    covar_cols <- setdiff(all_cols, c(1, cond_cols))
+    if (length(covar_cols) == 0) covar_mat <- NULL else covar_mat <- mod_local[, covar_cols, drop = FALSE]
+
+    # Remove covariates effect for plotting
+    DEpwys_es_all <- removeBatchEffect(
+      assay(es[DEpwys, , drop = FALSE]),
+      covariates = covar_mat,
+      design = mod_local[, cond_cols, drop = FALSE]
+    )
+
+    # Select top 30 pathways by adj.P.Val
+    top_n <- min(30, nrow(DEpwys_es_all))
+    top_idx <- order(tt[DEpwys, "adj.P.Val"])[1:top_n]
+    DEpwys_es <- DEpwys_es_all[top_idx, , drop = FALSE]
+
+    # Truncate pathway names
+    rownames(DEpwys_es) <- stringr::str_trunc(rownames(DEpwys_es), width = 50)
+
+    # cluster pathways
+    gsetClust <- hclust(as.dist(1 - cor(t(DEpwys_es), method = "pearson")), method = "complete")
+
+    # prepare annotation (use vst_object metadata)
+    sample_annot <- as.character(colData(vst_object)[[annot_col]])
+    names(sample_annot) <- colnames(es) # ensure names match columns in DEpwys_es
+
+    ann <- HeatmapAnnotation(
+      Annotation = sample_annot,
+      col = list(Annotation = annot_colors),
+      show_annotation_name = FALSE,
+      show_legend = FALSE
+    )
+
+    # truncate long pathway names for display (optional)
+    rownames(DEpwys_es) <- stringr::str_trunc(rownames(DEpwys_es), width = 50)
+
+    # Save heatmap (PNG)
+    out_png <- file.path(output_dir, paste0("GSVA_DEpws_", collection_clean, "_heatmap.png"))
+    png(out_png, width = 4500, height = 2000, res = 300)
+
+    ht <- Heatmap(
+      DEpwys_es,
+      name = "GSVA Enrichment Score",
+      col = pwyexpcol,
+      cluster_rows = gsetClust,
+      show_row_names = TRUE,
+      row_names_gp = gpar(fontsize = 8),  
+      column_names_gp = gpar(fontsize = 8),
+      cluster_columns = FALSE,
+      show_column_names = TRUE,
+      top_annotation = ann,
+      show_heatmap_legend = FALSE
+    )
+
+    gsva_enrichment_legend <- Legend(
+      title = "GSVA Enrichment Score",
+      col_fun = colorRamp2(
+        breaks = c(-max(abs(DEpwys_es)), 0, max(abs(DEpwys_es))),
+        colors = pwyexpcol[c(1, 128, 256)]
+      ),
+      at = seq(-max(abs(DEpwys_es)), max(abs(DEpwys_es)), length.out = 5),
+      labels = round(seq(-max(abs(DEpwys_es)), max(abs(DEpwys_es)), length.out = 5), 2),
+      title_gp = gpar(fontsize = 8, fontface = "bold"),
+      labels_gp = gpar(fontsize = 5)
+    )
+
+    condition_legend <- Legend(
+      labels = names(annot_colors),
+      title = annot_col,
+      legend_gp = gpar(fill = annot_colors),
+      title_gp = gpar(fontsize = 8, fontface = "bold"),
+      labels_gp = gpar(fontsize = 8)
+    )
+
+    combine_legends <- packLegend(gsva_enrichment_legend, condition_legend, direction = "vertical")
+
+    draw(ht, heatmap_legend_side = "left", annotation_legend_side = "left", 
+         heatmap_legend_list = combine_legends, padding = unit(c(5, 5, 5, 35), "mm")) #  bottom, left, top, right,
+    dev.off()
+
+    results_list[[collection_clean]] <- list(GSVA_matrix = assay(es), DE_table = tt, DE_matrix = DEpwys_es)
+
+    message("Saved heatmap: ", out_png)
+  }
+
+  # save workbook inside output_dir
+  out_wb <- file.path(output_dir, output_excel)
+  saveWorkbook(wb, out_wb, overwrite = TRUE)
+  message("Saved combined GSVA workbook: ", out_wb)
+
+  message("GSVA pipeline finished. Returning results as a list.")
+  return(invisible(results_list))
+}
+```
+
+# Running GSVA for batch 8 and 9 DGE results
+```{r, eval=FALSE}
+dds_batch8_9 <- readRDS("dds_batch8_9.rds")
+vst_batch8_9 <- DESeq2::vst(dds_batch8_9, blind = FALSE)
+SummarizedExperiment::assayNames(vst_batch8_9) <- "counts"
+
+gsva_batch8_9 <- run_gsva_pipeline(
+  vst_object = vst_batch8_9,
+  msigdb_list = c("CP:KEGG_LEGACY", "CP:KEGG_MEDICUS", "CP:REACTOME",
+                  "TFT:GTRD", "TFT:TFT_LEGACY", "GO:BP", "GO:CC", "GO:MF", "IMMUNESIGDB"),
+  output_excel = "GSVA_results.xlsx",
+  output_dir = "pathway_enrichment",
+  assay_name = "counts",
+  kcdf_mode = "Gaussian"
+)
+```
+
+# DE among patients of batches 8, 9 with (1) and without HCM (0)
+```{r, eval=FALSE}
+metadata_frda_batch8_9_patients <- metadata_frda_batch8_9 |> filter(Condition == "Patient")
+metadata_frda_batch8_9_patients$Condition <- droplevels(metadata_frda_batch8_9_patients$Condition)
+count_data_frda_batch8_9_patients <- count_data_filtered[, rownames(metadata_frda_batch8_9_patients)]
+
+hcm_batch8_9_patients_result <- dge(counts = count_data_frda_batch8_9_patients,
+                            meta = metadata_frda_batch8_9_patients,
+                            design = ~ Batch + Sex + Age + HCM,
+                            filename = "res/res_batch8_9_hcm_vs_non_hcm.xlsx",
+                            filename_volcano = "volcano_plot/volcano_batch8_9_hcm_vs_non_hcm.jpeg")
+  ```
+
+# WGCNA
