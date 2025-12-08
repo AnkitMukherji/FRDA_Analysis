@@ -899,7 +899,7 @@ hcm_batch8_9_patients_result <- dge(counts = count_data_frda_batch8_9_patients,
                             filename_volcano = "volcano_plot/volcano_batch8_9_hcm_vs_non_hcm.jpeg")
   ```
 
-# WGCNA
+# WGCNA for batch 8, 9
 ```{r, eval=FALSE}
 allowWGCNAThreads()
 
@@ -1087,9 +1087,8 @@ for (mod in significant_modules) {
 write_xlsx(output_list, "wgcna/genes_in_significant_modules_batch8_9.xlsx")
 
 # Enrichment analysis for genes in significant modules
-go_enrichment <- list()
-
 GO_enrichment_results <- list()
+
 for (mod in significant_modules) {
   genes_in_module <- output_list[[mod]]$Gene
   
@@ -1114,4 +1113,50 @@ for (mod in significant_modules) {
 }
 
 write.xlsx(GO_enrichment_results, "wgcna/go_enrichment_significant_modules_batch8_9.xlsx")
+
+# Enrichment analysis using Enrichr
+websiteLive <- getOption("enrichR.live")
+
+if (websiteLive) {
+    listEnrichrSites()
+    setEnrichrSite("Enrichr")  # Human genes
+    
+    # List of available databases
+    dbs <- listEnrichrDbs()
+    View(dbs)
+}
+
+dbs <- c("ClinVar_2025",
+         "GWAS_Catalog_2025",
+         "GO_Biological_Process_2025",
+         "GO_Cellular_Component_2025",
+         "GO_Molecular_Function_2025",
+         "Reactome_Pathways_2024",
+         "WikiPathways_2024_Human",
+         "KEGG_2019_Human")
+
+enrichr_results <- list()
+
+if (websiteLive) {
+  for (mod in significant_modules) {
+  genes_in_module <- output_list[[mod]]$Gene
+  
+  enrichr_enrich <- enrichr(genes_in_module, dbs)
+
+  for (db in names(enrichr_enrich)) {
+    enrichr_results[[paste0(mod, "_", db)]] <- enrichr_enrich[[db]]
+
+    p <- plotEnrich(enrichr_enrich[[db]], showTerms = 20, y = "Count", orderBy = "P.value", title = paste0("Enrichr ", db, " for Module ", mod))
+    
+    ggsave(paste0("wgcna/enrichr_", gsub(" ", "_", tolower(db)), "_module_", mod, "_batch8_9.png"),
+           plot = p,
+           width = 10,
+           height = 6,
+           dpi = 300)
+  }
+}}
+
+clean_name <- function(x) substr(x, 1, 31)
+names(enrichr_results) <- sapply(names(enrichr_results), clean_name)
+write.xlsx(enrichr_results, "wgcna/enrichr_significant_modules_batch8_9.xlsx")
 ```
