@@ -30,7 +30,6 @@ library(ComplexHeatmap)
 library(WGCNA)
 library(gridExtra)
 library(CorLevelPlot)
-library(RCy3)
 ```
 
 # Load RDS Files
@@ -1502,10 +1501,11 @@ kME_fxn$gene <- rownames(kME_fxn)
 colnames(kME_fxn)[1] <- "kME"
 
 kME_fxn <- kME_fxn[order(-abs(kME_fxn$kME)), ]
+
 top50_hubs <- head(kME_fxn$gene, 50)
 top5pct <- head(kME_fxn$gene, ceiling(0.05 * nrow(kME_fxn)))
-
 top_genes_for_network <- head(kME_fxn$gene, 200)
+# Neither of these have FXN
 
 datNet <- norm_count_data[, top_genes_for_network]
 ADJ1 <- adjacency(datNet, power = soft_power, type = "signed")
