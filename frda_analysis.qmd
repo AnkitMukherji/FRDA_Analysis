@@ -32,6 +32,8 @@ library(gridExtra)
 library(CorLevelPlot)
 library(RColorBrewer)
 library(ggpubr)
+library(caret)
+library(pROC)
 ```
 
 # Load RDS Files
@@ -1616,5 +1618,152 @@ cyt <- exportNetworkToCytoscape(
 
 # Patient stratification using consistent gene expression profiles
 ```{r, eval=FALSE}
+comparison <- read_xlsx("res/comparison_batch8_9_1_7.xlsx", sheet = "Comparison")
+# Genes whose expression is consistent when comparing different batches
+signature_genes <- comparison |> 
+  filter(Overall_LFC_Synchronicity == "TRUE",
+          padj_All_Batch < 0.01,
+          padj_Batch_1_7 < 0.01,
+          padj_Batch_8_9 < 0.01,
+          !str_detect(gene_names, "ENSG")) |> 
+  pull(gene_names)
 
+# Normalized expression values
+dds <- DESeqDataSetFromMatrix(countData = round(count_data_frda_all), 
+                              colData = metadata_frda_all, 
+                              design = ~1)
+dds <- estimateSizeFactors(dds)
+vst_obj <- vst(dds, blind = TRUE)
+expr_vst <- assay(vst_obj)
+expr_filt <- expr_vst[rowMeans(expr_vst) > 5, ] # Removing genes whose average expression across samples is < 5
+gene_var <- rowVars(expr_filt)
+expr_filt <- expr_filt[gene_var > quantile(gene_var, 0.5), ] # Top 50 % high variance genes
+expr_sig <- expr_filt[rownames(expr_filt) %in% signature_genes, ] # Keeping only the signature genes 
+
+y <- factor(metadata_frda_all$Condition, levels = c("Control", "Patient"))
+
+# ROC for each gene
+signature_gene_expr_mat <- expr_vst[signature_genes, ]
+gene_roc_stats <- map_dfr(rownames(signature_gene_expr_mat), function(gene) {
+  expr_gene <- signature_gene_expr_mat[gene, ]
+  roc_obj <- roc(response  = y, predictor = as.numeric(expr_gene), levels = c("Control", "Patient"), direction = "auto")
+  auc_val <- as.numeric(auc(roc_obj))
+  # Determine direction of change
+  median_control <- median(expr_gene[y == "Control"])
+  median_patient <- median(expr_gene[y == "Patient"])
+
+  tibble(Gene = gene,
+          AUC = auc_val,
+          Direction = ifelse(median_patient > median_control, "Up_in_Patient", "Down_in_Patient"),
+          Control_Median = median_control,
+          Patient_Median = median_patient)
+})
+
+gene_roc_stats <- gene_roc_stats |> arrange(desc(AUC))
+print(head(gene_roc_stats, 10))
+
+top_genes <- gene_roc_stats$Gene[1:6]
+png("patient_stratification_prediction/patient_control/top_genes_roc.png", width = 1200, height = 800, res = 120) 
+par(mfrow = c(2, 3))
+for (g in top_genes) {
+  roc_obj <- roc(y, as.numeric(signature_gene_expr_mat[g, ]), levels = c("Control", "Patient"), direction = "auto")
+  plot(roc_obj, main = paste0(g, " (AUC=", round(auc(roc_obj), 2), ")"), cex.lab = 1.8, cex.axis = 1.2, cex.main = 1.8)
+}
+par(mfrow = c(1, 1))
+dev.off()
+graphics.off()
+
+basal_ranges <- map_dfr(rownames(signature_gene_expr_mat), function(gene) {
+  ctrl_vals <- signature_gene_expr_mat[gene, y == "Control"]
+  tibble(
+    Gene = gene,
+    Control_Median = median(ctrl_vals),
+    Control_Q1 = quantile(ctrl_vals, 0.25),
+    Control_Q3 = quantile(ctrl_vals, 0.75),
+    Control_Lower_95 = quantile(ctrl_vals, 0.025),
+    Control_Upper_95 = quantile(ctrl_vals, 0.975)
+  )
+})
+
+print(head(basal_ranges))
+
+gene_to_plot <- gene_roc_stats$Gene[1]
+boxplot(signature_gene_expr_mat[gene_to_plot, ] ~ y, col = c("skyblue", "salmon"), ylab = "VST Expression", main = paste0(gene_to_plot, " expression"))
+abline(h = basal_ranges |> filter(Gene == gene_to_plot) |> pull(Control_Upper_95), lty = 2)
+
+# Calculating average expression of genes for patients and controls
+train_centroids <- function(expr, labels) {
+  list(patient = rowMeans(expr[, labels == "Patient", drop = FALSE]),
+      control = rowMeans(expr[, labels == "Control", drop = FALSE]))
+}
+
+# Measures whether a sample's gene-expression pattern is more similar to the control centroid or the patient centroid
+signature_score <- function(sample, centroids) {
+  cor(sample, centroids$control) - cor(sample, centroids$patient)
+}
+
+set.seed(123)
+folds <- createFolds(y, k = 10) # Divides the patient-control samples into 10 random clusters
+
+sig_sizes <- c(20, 30, 50, 75) # Size of stable gene signatures that can stratify patients from controls
+results_all <- list()
+gene_freq <- list()
+
+for (k in sig_sizes) {
+  cv_res <- map_dfr(seq_along(folds), function(i) {
+    test_idx  <- folds[[i]]
+    train_idx <- setdiff(seq_along(y), test_idx)
+    expr_train <- expr_sig[, train_idx]
+    expr_test  <- expr_sig[, test_idx]
+    y_train <- y[train_idx]
+    y_test  <- y[test_idx]
+    expr_train_bc <- removeBatchEffect(expr_train, batch = metadata_frda_all$Batch[train_idx])
+    expr_test_bc <- removeBatchEffect(expr_test, batch = metadata_frda_all$Batch[test_idx])
+    # Finding the difference of the medians of genes expression between patients and controls
+    gene_effect <- apply(expr_train_bc, 1, function(g) median(g[y_train == "Patient"]) - median(g[y_train == "Control"]))
+    ranked_genes <- names(sort(abs(gene_effect), decreasing = TRUE))
+    selected_genes <- ranked_genes[1:k] # Genes with the highest differences
+    gene_freq[[paste0("k", k, "_fold", i)]] <<- selected_genes
+    centroids <- train_centroids(expr_train_bc[selected_genes, ], y_train) # Calculating centroids on the training dataset
+    # Identifying whether the centroids can classify patients from controls using the signature score function
+    scores <- apply(expr_test_bc[selected_genes, ], 2, signature_score, centroids = centroids)
+    tibble(k = k, fold = i, score = scores, truth = y_test)})
+
+  roc_obj <- roc(cv_res$truth, cv_res$score, levels = c("Control", "Patient"), direction = "auto")
+  results_all[[as.character(k)]] <- tibble(signature_size = k, AUC = as.numeric(auc(roc_obj)))
+}
+
+auc_summary <- bind_rows(results_all)
+print(auc_summary)
+
+# Top stable genes present across different signature gene size and fold
+gene_table <- sort(table(unlist(gene_freq)), decreasing = TRUE)
+stable_genes <- names(gene_table[gene_table >= 7])
+stable_genes <- stable_genes[1:50]
+
+# Using the stable genes to calculate final centroid values and signature scores
+final_effect <- apply(expr_sig[stable_genes, ], 1, function(g) median(g[y == "Patient"]) - median(g[y == "Control"]))
+final_genes <- names(sort(abs(final_effect), decreasing = TRUE))[1:50]
+final_centroids <- train_centroids(expr_sig[final_genes, ], y)
+scores_all <- apply(expr_sig[final_genes, ], 2, signature_score, centroids = final_centroids)
+
+# Performance evaluation using AUC curve
+roc_final <- roc(y, scores_all, levels = c("Control", "Patient"), direction = "auto")
+coords_df <- coords(roc_final, x = "best", best.method = "youden", ret = c("threshold", "sensitivity", "specificity"))
+threshold <- as.numeric(coords_df["threshold"]) # Identifying the threshold distinguishing patients and controls
+
+saveRDS(list(genes = final_genes, centroids = final_centroids, threshold = threshold), file = "FRDA_diagnostic_signature.rds")
+
+pred_class <- ifelse(scores_all < threshold, "Patient", "Control")
+
+# Confusion matrix
+confusionMatrix(factor(pred_class, levels = c("Control", "Patient")), 
+                factor(y, levels = c("Control", "Patient")),
+                positive = "Patient")
+
+# Threshold separating patients and control
+png("patient_stratification_prediction/patient_control/patient_control_stratify.png", width = 1200, height = 800, res = 120) 
+boxplot(scores_all ~ y, col = c("skyblue", "salmon"), ylab = "FRDA diagnostic score")
+abline(h = threshold, lty = 2)
+dev.off()
 ```
