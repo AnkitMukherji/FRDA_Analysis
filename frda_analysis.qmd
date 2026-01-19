@@ -33,6 +33,7 @@ library(enrichplot)
 library(org.Hs.eg.db)
 library(ComplexHeatmap)
 library(WGCNA)
+library(rstatix)
 library(gridExtra)
 library(CorLevelPlot)
 library(RColorBrewer)
@@ -1526,14 +1527,36 @@ immune_cells_boxplot_df <- assay(es) |>
     by = "Sample"
   )
 
-plot <- ggplot(immune_cells_boxplot_df, aes(x = Condition, y = GSVA_score, fill = Condition)) +
-  geom_boxplot(outlier.shape = NA, alpha = 0.7, width = 0.35) +
-  stat_compare_means(
-    method = "wilcox.test", 
-    label = "p.format", 
-    size = 1.5, 
-    label.x.npc = "centre", 
-    label.y.npc = "top") +
+stat_df <- immune_cells_boxplot_df |> 
+  group_by(Cell_type) |> 
+  wilcox_test(GSVA_score ~ Condition) |> 
+  adjust_pvalue(method = "BH") |> 
+  add_significance("p.adj") |> 
+  left_join(
+    immune_cells_boxplot_df |> 
+      group_by(Cell_type) |> 
+      summarise(y.position = max(GSVA_score, na.rm = TRUE) * 1.1),
+    by = "Cell_type"
+  )
+
+immune_cells_boxplot_df_sig_nonsig <- immune_cells_boxplot_df |> 
+  left_join(stat_df, by = "Cell_type")
+
+plot <- ggplot(immune_cells_boxplot_df_sig_nonsig, aes(x = Condition, y = GSVA_score, fill = Condition)) +
+  geom_boxplot(
+    outlier.shape = NA, 
+    alpha = 0.7, 
+    width = 0.35,
+    median.linewidth = 0.3
+  ) +
+  stat_pvalue_manual(
+    stat_df,
+    label = "p.adj.signif",
+    size = 2,
+    tip.length = 0.03,
+    hide.ns = TRUE,
+    y.position = "y.position"
+  ) +
   scale_fill_manual(values = c(
       "Control" = "#3B8BC2",
       "Patient" = "#C93A5A"
@@ -1727,11 +1750,16 @@ heatmap.data <- rename(heatmap.data, Condition = Condition_0_1)
 module_eigengenes_length <- ncol(module_eigengenes_sort)
 trait_data_length <- ncol(trait_data)
 
+png(
+  filename = "wgcna/FRDA_All_Batches_ENSG_genes_removed/wgcna_module_trait_relationships_all_batch.png", 
+  width = 13, 
+  height = 8.5, 
+  units = "in", 
+  res = 600)
 CorLevelPlot(heatmap.data,
              x = names(heatmap.data)[module_eigengenes_length + 1:trait_data_length],
              y = names(heatmap.data)[1:module_eigengenes_length],
-             col = c("green", "lightgreen", "white", "pink", "red"))
-dev.copy(png, filename = "wgcna/FRDA_All_Batches_ENSG_genes_removed/wgcna_module_trait_relationships_all_batch.png", width = 2000, height = 1500, res = 150)
+             col = c("#398110ff", "#7ecc51ff", "white", "#f7afbeff", "#C93A5A"))
 dev.off()
 
 # Extract genes in significant modules
@@ -1763,29 +1791,77 @@ boxplot_df <- bwnet$MEs |>
   pivot_longer(cols = all_of(colnames(bwnet$MEs)),
               names_to = "Module",
               values_to = "Eigengene") |> 
-  filter(Module %in% rownames(module_trait_cor)) |> 
+  filter(Module != "ME0") |> 
   arrange(as.numeric(sub("ME", "", Module))) |> 
   mutate(Module = factor(Module, levels = unique(Module)))
 
-plot <- ggplot(boxplot_df, aes(x = Condition, y = Eigengene, fill = Condition)) +
-  geom_boxplot(outlier.shape = NA, alpha = 0.7) +
-  stat_compare_means(method = "wilcox.test") +
+stat_df <- boxplot_df |>
+  group_by(Module) |>
+  wilcox_test(Eigengene ~ Condition) |>
+  adjust_pvalue(method = "BH") |>
+  add_significance("p.adj") |>
+  left_join(
+    boxplot_df |>
+      group_by(Module) |>
+      summarise(y.position = max(Eigengene, na.rm = TRUE) * 1.1),
+    by = "Module"
+  ) |>
+  filter(p.adj < 0.05) |> 
+  arrange(as.numeric(sub("ME", "", Module))) |> 
+  mutate(Module = factor(Module, levels = unique(Module)))
+
+boxplot_df_sig <- boxplot_df |>
+  filter(Module %in% stat_df$Module)
+
+plot <- ggplot(
+  boxplot_df_sig,
+  aes(x = Condition, y = Eigengene, fill = Condition)
+) +
+  geom_boxplot(
+    outlier.shape = NA,
+    alpha = 0.7,
+    width = 0.35,
+    median.linewidth = 0.2
+  ) +
+  stat_pvalue_manual(
+    stat_df,
+    label = "p.adj.signif",
+    size = 2,
+    tip.length = 0.03,
+    y.position = "y.position"
+  ) +
+  scale_fill_manual(values = c(
+    "Control" = "#3B8BC2",
+    "Patient" = "#C93A5A"
+  )) +
   scale_y_continuous(expand = expansion(mult = c(0.05, 0.2))) +
   facet_wrap(~ Module, scales = "free_y") +
-  theme_bw() +
-  labs(title = "Module Eigengene Expression: Patients vs Controls", x = "", y = "Module Eigengene") +
+  theme_pubclean(base_size = 7) +
+  labs(
+    title = NULL,
+    x = NULL,
+    y = "Module Eigengene"
+  ) +
   theme(
-    strip.text = element_text(face = "bold"),
+    strip.text = element_text(size = 5, face = "bold"),
+    axis.title.y = element_text(size = 5),
     axis.text.x = element_blank(),
+    axis.text.y = element_text(size = 4),
     axis.ticks.x = element_blank(),
-    legend.position = c(0.92, 0.1),
-    legend.title = element_text(size = 10, face = "bold"),
-    legend.text = element_text(size = 10),
-    # legend.box.background = element_rect(fill = "white", color = "black"),
-    # legend.box.margin = margin(15, 20, 15, 20),  # top, right, bottom, left
-    legend.background = element_blank())
-dev.copy(png, filename = "wgcna/FRDA_All_Batches_ENSG_genes_removed/boxplot_all_modules.png", width = 2000, height = 1500, res = 150)
-dev.off()
+    panel.grid = element_blank(),
+    legend.position = "bottom",
+    legend.title = element_text(size = 5, face = "bold"),
+    legend.text = element_text(size = 4, face = "bold")
+  )
+ggsave(
+  "wgcna/FRDA_All_Batches_ENSG_genes_removed/boxplot_significant_modules.png",
+  plot = plot,
+  device = "png",
+  units = "in",
+  height = 2.8,
+  width = 3.8,
+  dpi = 600
+)
 
 # Enrichment analysis for genes in significant modules
 GO_enrichment_results <- list()
@@ -1898,6 +1974,64 @@ if (websiteLive) {
 clean_name <- function(x) substr(x, 1, 31)
 names(enrichr_results) <- sapply(names(enrichr_results), clean_name)
 write.xlsx(enrichr_results, "wgcna/FRDA_All_Batches_ENSG_genes_removed/enrichr_significant_modules_all_batch.xlsx")
+
+# Plot for important modules from WGCNA
+for(mod in (boxplot_df_sig |> pull(Module) |> unique())){
+  df <- read_excel("wgcna/FRDA_All_Batches_ENSG_genes_removed/enrichr_significant_modules_all_batch.xlsx", sheet = paste0(mod, "_Reactome_Pathways_2024"))
+
+  pathway_plot <- df |> 
+  mutate(
+    GeneNum = as.numeric(sub("/.*", "", Overlap)),
+    Term_short = str_trunc(Term, width = 35),
+    negLogAdjP = -log10(Adjusted.P.value)
+  ) |>
+  arrange(desc(negLogAdjP)) |>
+  slice_head(n = 20)
+
+  p <- ggplot(
+  pathway_plot,
+  aes(
+    x = GeneNum,
+    y = reorder(Term_short, negLogAdjP),
+    fill = negLogAdjP
+  )
+) +
+  geom_col(width = 0.7) +
+  scale_fill_gradient(
+    low = "#3B8BC2",
+    high = "#C93A5A",
+    name = expression(bold(-log[10]("adj p")))
+  ) +
+  labs(
+    x = "Gene count",
+    y = NULL
+  ) +
+  theme_minimal(base_size = 7) +
+  guides(
+  fill = guide_colourbar(
+    barheight = unit(1.5, "cm"),
+    barwidth  = unit(0.25, "cm")
+    )
+  ) +
+  theme(
+    axis.title.x = element_text(size = 6, face = "bold"),
+    axis.text = element_text(size = 4, face = "bold"),
+    panel.grid = element_blank(),
+    axis.line = element_line(linewidth = 0.3, colour = "grey40"),
+    legend.position = "right",
+    legend.title = element_text(size = 5),
+    legend.text  = element_text(size = 4)
+  )
+  ggsave(
+    paste0("wgcna/FRDA_All_Batches_ENSG_genes_removed/", mod, "_enrichment.png"),
+    plot = p,
+    device = "png",
+    units = "in",
+    height = 8.5/3,
+    width = 13/3,
+    dpi = 600
+  )
+}
 
 # Analysis focussed on FXN
 # Sub-cluster the FXN module only (to find the top genes co-expressed with FXN)
