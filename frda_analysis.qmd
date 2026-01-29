@@ -1331,23 +1331,15 @@ vol_data <- res |>
       TRUE ~ "Not significant"
     ))
 
-top_up <- vol_data |>
-  filter(Expression == "Upregulated") |>
+top_20 <- vol_data |>
   arrange(padj) |>
-  head(10)
-
-top_down <- vol_data |>
-  filter(Expression == "Downregulated") |>
-  arrange(padj) |>
-  head(10)
-
-top_genes <- bind_rows(top_up, top_down)
+  head(20)
 
 p <- ggplot(vol_data, aes(x = log2FoldChange, y = -log10(padj))) +
   geom_point(aes(color = Expression), alpha = 0.8, size = 1.5) +
   guides(color = guide_legend(override.aes = list(size = 4))) +
   geom_text_repel(
-    data = top_genes,
+    data = top_20,
     aes(label = .data[["gene_names"]]),
     size = 1.5,
     max.overlaps = 20,
