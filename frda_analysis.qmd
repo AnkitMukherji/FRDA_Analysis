@@ -1332,7 +1332,8 @@ vol_data <- res |>
     ))
 
 top_20 <- vol_data |>
-  arrange(padj) |>
+  filter(Expression %in% c("Upregulated", "Downregulated")) |> 
+  arrange(padj) |> 
   head(20)
 
 p <- ggplot(vol_data, aes(x = log2FoldChange, y = -log10(padj))) +
