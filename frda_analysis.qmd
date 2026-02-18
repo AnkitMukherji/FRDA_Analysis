@@ -2081,8 +2081,9 @@ cyt <- exportNetworkToCytoscape(
 )
 ```
 
-# Patient stratification using consistent gene expression profiles
-```{r, eval=FALSE}
+# Stable expression signatures across batches
+
+```{r}
 comparison <- read_xlsx("res/comparison_batch8_9_1_7.xlsx", sheet = "Comparison")
 # Genes whose expression is consistent when comparing different batches
 signature_genes <- comparison |> 
@@ -2106,12 +2107,15 @@ expr_filt <- expr_filt[gene_var > quantile(gene_var, 0.5), ] # Top 50 % high var
 expr_sig <- expr_filt[rownames(expr_filt) %in% signature_genes, ] # Keeping only the signature genes 
 
 y <- factor(metadata_frda_all$Condition, levels = c("Control", "Patient"))
+```
 
+# Differentiating FRDA patients from controls using consistent gene expression profiles
+```{r, eval=FALSE}
 # ROC for each gene
 signature_gene_expr_mat <- expr_vst[signature_genes, ]
 gene_roc_stats <- map_dfr(rownames(signature_gene_expr_mat), function(gene) {
   expr_gene <- signature_gene_expr_mat[gene, ]
-  roc_obj <- roc(response  = y, predictor = as.numeric(expr_gene), levels = c("Control", "Patient"), direction = "auto")
+  roc_obj <- roc(response = y, predictor = as.numeric(expr_gene), levels = c("Control", "Patient"), direction = "auto")
   auc_val <- as.numeric(auc(roc_obj))
   # Determine direction of change
   median_control <- median(expr_gene[y == "Control"])
@@ -2231,4 +2235,406 @@ png("patient_stratification_prediction/patient_control/patient_control_stratify.
 boxplot(scores_all ~ y, col = c("skyblue", "salmon"), ylab = "FRDA diagnostic score")
 abline(h = threshold, lty = 2)
 dev.off()
+```
+
+# Stratification of FRDA patients into different severity groups using consistent gene expression profiles
+
+```{r}
+# Filtering FRDA patients only
+frda_patients <- metadata_frda_all[metadata_frda_all$Condition == "Patient", ]
+
+# Converting severity scales to numeric
+frda_patients$FSA_scale_num <- as.numeric(frda_patients$`FSA scale`)
+frda_patients$mFARS_total_num <- as.numeric(frda_patients$`mFARS total`)
+frda_patients$mFARS_USS_num <- as.numeric(frda_patients$`mFARS USS`)
+
+# Total patients with data for each scale
+n_fsa <- sum(!is.na(frda_patients$FSA_scale_num))
+n_mfars_total <- sum(!is.na(frda_patients$mFARS_total_num))
+n_mfars_uss <- sum(!is.na(frda_patients$mFARS_USS_num))
+
+# Histogram for FSA scale
+p1 <- ggplot(frda_patients, aes(x = FSA_scale_num)) +
+  geom_histogram(bins = 20, fill = "#3B8BC2", color = "black", alpha = 0.7) +
+  stat_bin(
+    bins = 20,
+    geom = "text",
+    aes(label = after_stat(count), y = after_stat(count)),
+    vjust = -0.5,
+    size = 4
+  ) +
+  scale_x_continuous(breaks = scales::extended_breaks(n = 15)) +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.12))) +
+  theme_bw(base_size = 14) +
+  labs(
+    x = "FSA Scale",
+    y = "Number of Patients",
+    title = "Distribution of Patients by FSA Scale",
+    subtitle = paste0("Total: ", n_fsa, " patients with FSA scale data")
+  ) +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold"),
+    plot.subtitle = element_text(hjust = 0.5),
+    panel.grid.minor = element_blank()
+  )
+
+# Histogram for mFARS total
+p2 <- ggplot(frda_patients, aes(x = mFARS_total_num)) +
+  geom_histogram(bins = 20, fill = "#C93A5A", color = "black", alpha = 0.7) +
+  stat_bin(
+    bins = 20,
+    geom = "text",
+    aes(label = after_stat(count), y = after_stat(count)),
+    vjust = -0.5,
+    size = 4
+  ) +
+  scale_x_continuous(breaks = scales::extended_breaks(n = 15)) +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.12))) +
+  theme_bw(base_size = 14) +
+  labs(
+    x = "mFARS Total",
+    y = "Number of Patients",
+    title = "Distribution of Patients by mFARS Total",
+    subtitle = paste0("Total: ", n_mfars_total, " patients with mFARS total data")
+  ) +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold"),
+    plot.subtitle = element_text(hjust = 0.5),
+    panel.grid.minor = element_blank()
+  )
+
+# Histogram for mFARS USS
+p3 <- ggplot(frda_patients, aes(x = mFARS_USS_num)) +
+  geom_histogram(bins = 20, fill = "#7ecc51", color = "black", alpha = 0.7) +
+  stat_bin(
+    bins = 20,
+    geom = "text",
+    aes(label = after_stat(count), y = after_stat(count)),
+    vjust = -0.5,
+    size = 4
+  ) +
+  scale_x_continuous(breaks = scales::extended_breaks(n = 15)) +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.12))) +
+  theme_bw(base_size = 14) +
+  labs(
+    x = "mFARS USS",
+    y = "Number of Patients",
+    title = "Distribution of Patients by mFARS USS",
+    subtitle = paste0("Total: ", n_mfars_uss, " patients with mFARS USS data")
+  ) +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold"),
+    plot.subtitle = element_text(hjust = 0.5),
+    panel.grid.minor = element_blank()
+  )
+
+# Combine plots
+combined_hist <- p1 / p2 / p3
+
+# Save combined plot
+ggsave(
+  "patient_stratification_prediction/patient_stratify/severity_scales_histograms.png",
+  plot = combined_hist,
+  device = "png",
+  units = "in",
+  height = 12,
+  width = 8,
+  dpi = 600
+)
+
+# Stratification of FRDA patients into mild, moderate, and severe groups using the three severity scales
+# Composite severity index using all 3 scales (z-score each scale, then average)
+
+severity_df <- frda_patients |>
+  transmute(
+    SampleID = rownames(frda_patients),
+    FSA = FSA_scale_num,
+    mFARS_total = mFARS_total_num,
+    mFARS_USS = mFARS_USS_num
+  )
+
+z_mat <- as.data.frame(scale(severity_df[, c("FSA", "mFARS_total", "mFARS_USS")]))
+names(z_mat) <- paste0(names(z_mat), "_z")
+
+severity_df <- bind_cols(severity_df, z_mat) |>
+  mutate(
+    n_scales_present = rowSums(!is.na(across(ends_with("_z")))),
+    severity_index = rowMeans(across(ends_with("_z")), na.rm = TRUE)
+  )
+
+# If a patient has none of the scales, keep index as NA
+severity_df$severity_index[severity_df$n_scales_present == 0] <- NA_real_
+
+# Compute tertile cutoffs among patients with at least 2 scales available
+eligible <- severity_df |> filter(n_scales_present >= 2, !is.na(severity_index))
+cutoffs <- quantile(eligible$severity_index, probs = c(1 / 3, 2 / 3), na.rm = TRUE, names = FALSE)
+
+severity_df <- severity_df |>
+  mutate(
+    severity_group = case_when(
+      n_scales_present < 2 ~ "Insufficient data (<2 scales)",
+      severity_index <= cutoffs[1] ~ "Mild",
+      severity_index <= cutoffs[2] ~ "Moderate",
+      TRUE ~ "Severe"
+    ),
+    severity_group = factor(
+      severity_group,
+      levels = c("Mild", "Moderate", "Severe", "Insufficient data (<2 scales)")
+    )
+  )
+
+# Joining results back to frda_patients
+frda_patients <- frda_patients |>
+  mutate(SampleID = rownames(frda_patients)) |>
+  left_join(
+    severity_df |> select(SampleID, severity_index, n_scales_present, severity_group),
+    by = "SampleID"
+  ) |>
+  column_to_rownames("SampleID")
+
+# Counts per group
+print(table(frda_patients$severity_group, useNA = "ifany"))
+
+# Counts among patients included in grouping (Mild/Moderate/Severe)
+group_n <- frda_patients |>
+  filter(severity_group %in% c("Mild", "Moderate", "Severe")) |>
+  count(severity_group) |>
+  mutate(severity_group = as.character(severity_group))
+
+group_n_named <- setNames(group_n$n, group_n$severity_group)
+group_n_named <- group_n_named[c("Mild", "Moderate", "Severe")]
+group_n_named[is.na(group_n_named)] <- 0
+
+group_n_total <- sum(group_n_named)
+
+# Distribution of the composite index (cutoffs shown as dashed lines)
+p_index <- ggplot(
+  frda_patients |> filter(severity_group %in% c("Mild", "Moderate", "Severe")),
+  aes(x = severity_index, fill = severity_group)
+) +
+  geom_histogram(bins = 30, alpha = 0.7, color = "black") +
+  geom_vline(xintercept = cutoffs, linetype = 2) +
+  scale_fill_manual(
+    values = c(Mild = "#7ecc51", Moderate = "#F1A340", Severe = "#C93A5A"),
+    breaks = c("Mild", "Moderate", "Severe"),
+    labels = c(
+      Mild = paste0("Mild (n=", group_n_named[["Mild"]], ")"),
+      Moderate = paste0("Moderate (n=", group_n_named[["Moderate"]], ")"),
+      Severe = paste0("Severe (n=", group_n_named[["Severe"]], ")")
+    )
+  ) +
+  # scale_y_continuous(expand = expansion(mult = c(0, 0.22))) +
+  theme_bw(base_size = 14) +
+  labs(
+    title = "Composite severity index (FSA + mFARS total + mFARS USS)",
+    subtitle = paste0(
+      "Severity index = mean(z-scored scales); groups = tertiles among patients with ≥2 scales. ",
+      paste0("Patients included: ", group_n_total)
+    ),
+    x = "Severity index (mean z-score)",
+    y = "Number of patients",
+    fill = "Group"
+  ) +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold"),
+    plot.subtitle = element_text(hjust = 0.5),
+    panel.grid.minor = element_blank()
+  )
+
+ggsave(
+  "patient_stratification_prediction/patient_stratify/severity_index_histogram.png",
+  plot = p_index,
+  device = "png",
+  units = "in",
+  height = 8,
+  width = 12,
+  dpi = 600
+)
+
+# Raw scale distributions by composite group
+long_scales <- frda_patients |>
+  rownames_to_column("SampleID") |>
+  filter(severity_group %in% c("Mild", "Moderate", "Severe")) |>
+  select(
+    SampleID,
+    severity_group,
+    `FSA scale` = FSA_scale_num,
+    `mFARS total` = mFARS_total_num,
+    `mFARS USS` = mFARS_USS_num
+  ) |>
+  pivot_longer(
+    cols = c(`FSA scale`, `mFARS total`, `mFARS USS`),
+    names_to = "Scale",
+    values_to = "Score"
+  )
+
+# Per-scale, per-group counts for annotation
+count_df <- long_scales |>
+  group_by(Scale, severity_group) |>
+  summarise(n = n(), .groups = "drop") |>
+  left_join(
+    long_scales |>
+      group_by(Scale) |>
+      summarise(y.position = max(Score, na.rm = TRUE) * 1.1, .groups = "drop"),
+    by = "Scale"
+  )
+
+# Boxplot of raw severity scales by composite group
+p_box <- ggplot(long_scales, aes(x = severity_group, y = Score, fill = severity_group)) +
+  geom_boxplot(outlier.shape = NA, alpha = 0.7) +
+  geom_jitter(width = 0.15, size = 1.2, alpha = 0.5) +
+  geom_text(
+    data = count_df,
+    aes(x = severity_group, y = y.position, label = paste0("n=", n)),
+    inherit.aes = FALSE,
+    size = 5
+  ) +
+  facet_wrap(~Scale, scales = "free_y", ncol = 1) +
+  theme_bw(base_size = 15) +
+  labs(
+    title = "Raw severity scales by composite group",
+    x = NULL,
+    y = "Score"
+  ) +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold"),
+    legend.position = "none",
+    panel.grid.minor = element_blank()
+  )
+
+ggsave(
+  "patient_stratification_prediction/patient_stratify/severity_scales_boxplots.png",
+  plot = p_box,
+  device = "png",
+  units = "in",
+  height = 12,
+  width = 8,
+  dpi = 600
+)
+
+# Gene-level ROC: Control vs Mild / Moderate / Severe
+severity_patients <- frda_patients |>
+  rownames_to_column("SampleID") |>
+  select(SampleID, severity_group)
+
+metadata_frda_all_ext <- metadata_frda_all |>
+  rownames_to_column("SampleID") |>
+  left_join(severity_patients, by = "SampleID") |>
+  mutate(
+    severity_4level = case_when(
+      Condition == "Control" ~ "Control",
+      severity_group %in% c("Mild", "Moderate", "Severe") ~ as.character(severity_group),
+      TRUE ~ NA_character_
+    ),
+    severity_4level = factor(
+      severity_4level,
+      levels = c("Control", "Mild", "Moderate", "Severe")
+    )
+  ) |>
+  column_to_rownames("SampleID")
+
+table(metadata_frda_all_ext$severity_4level, useNA = "ifany")
+
+# VST expression (all FRDA + controls) and batch correction
+dds_frda_all <- readRDS("dds_frda_all_ensg_removed.rds")
+vst_frda_all <- DESeq2::vst(dds_frda_all, blind = TRUE)
+expr_vst_all <- assay(vst_frda_all)
+
+# Align expression matrix columns to metadata rows
+expr_vst_all <- expr_vst_all[, rownames(metadata_frda_all_ext)]
+
+covs_all <- model.matrix(~ Sex + Age + Condition, data = metadata_frda_all_ext)
+expr_rb_all <- limma::removeBatchEffect(
+  expr_vst_all,
+  batch = metadata_frda_all_ext$Batch,
+  design = covs_all
+)
+
+# Function to calculate per-gene ROC for patient state vs Control
+calc_gene_roc <- function(expr_mat, meta, state_label) {
+  keep <- !is.na(meta$severity_4level) & meta$severity_4level %in% c("Control", state_label)
+  meta_sub <- meta[keep, , drop = FALSE]
+  expr_sub <- expr_mat[, keep, drop = FALSE]
+
+  y <- factor(meta_sub$severity_4level, levels = c("Control", state_label))
+
+  purrr::map_dfr(rownames(expr_sub), function(g) {
+    vals <- as.numeric(expr_sub[g, ])
+
+    # Skipping genes with no variation
+    if (all(vals == vals[1])) {
+      return(tibble(
+        gene = g,
+        comparison = paste0(state_label, "_vs_Control"),
+        AUC = NA_real_,
+        Direction = NA_character_,
+        Control_median = NA_real_,
+        State_median = NA_real_
+      ))
+    }
+
+    roc_obj <- tryCatch(
+      roc(
+        response = y,
+        predictor = vals,
+        levels = c("Control", state_label),
+        direction = "auto"
+      ),
+      error = function(e) NULL
+    )
+
+    if (is.null(roc_obj)) {
+      return(tibble(
+        gene = g,
+        comparison = paste0(state_label, "_vs_Control"),
+        AUC = NA_real_,
+        Direction = NA_character_,
+        Control_median = NA_real_,
+        State_median = NA_real_
+      ))
+    }
+
+    auc_val <- as.numeric(auc(roc_obj))
+    med_ctrl <- median(vals[y == "Control"])
+    med_state <- median(vals[y == state_label])
+
+    tibble(
+      gene = g,
+      comparison = paste0(state_label, "_vs_Control"),
+      AUC = auc_val,
+      Direction = ifelse(
+        med_state > med_ctrl,
+        paste0("Up_in_", state_label),
+        paste0("Down_in_", state_label)
+      ),
+      Control_median = med_ctrl,
+      State_median = med_state
+    )
+  })
+}
+
+# Running ROC for each patient state vs Control
+roc_results <- map_dfr(
+  c("Mild", "Moderate", "Severe"),
+  ~ calc_gene_roc(expr_rb_all, metadata_frda_all_ext, .x)
+)
+
+# Summary of signal strength
+roc_summary <- roc_results |>
+  group_by(comparison) |>
+  summarise(
+    n_genes = n(),
+    median_AUC = median(AUC, na.rm = TRUE),
+    n_AUC_ge_0_8 = sum(AUC >= 0.8, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+print(roc_summary)
+
+# Save full per-gene ROC table
+dir.create("patient_stratification_prediction/patient_state", recursive = TRUE, showWarnings = FALSE)
+writexl::write_xlsx(
+  roc_results,
+  "patient_stratification_prediction/patient_state/gene_level_ROC_control_vs_states.xlsx"
+)
 ```
