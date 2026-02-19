@@ -372,7 +372,8 @@ replication_count_data <- count_data_filtered[, rownames(replication_metadata)]
 
 # DGE function
 ```{r}
-dge <- function(counts, meta, design, filename, filename_volcano) {
+dge <- function(counts, meta, design, filename, filename_volcano,
+                lfc_threshold = 2, padj_threshold = 0.01, top_n = 10) {
   library(DESeq2)
   library(writexl)
   library(ggplot2)
@@ -381,6 +382,7 @@ dge <- function(counts, meta, design, filename, filename_volcano) {
                                 colData = meta,
                                 design = design)
   dds <- DESeq(dds, parallel = FALSE)
+
   save_dds <- readline(prompt = "Save DESeqDataSet object? (yes/no): ")
   if (tolower(save_dds) == "yes") {
     dds_filename <- readline(prompt = "Enter filename to save DESeqDataSet object (e.g., dds.rds): ")
@@ -419,11 +421,15 @@ dge <- function(counts, meta, design, filename, filename_volcano) {
   } else {
     stop("Invalid input")
   }
-  
+
   resOrdered <- res[order(res$padj), ]
   write_xlsx(resOrdered, filename)
-  
-  volcano <- volcano_plot(resOrdered, gene_label_col = "gene_names")
+
+  volcano <- volcano_plot(resOrdered,
+                          gene_label_col = "gene_names",
+                          lfc_threshold = lfc_threshold,
+                          padj_threshold = padj_threshold,
+                          top_n = top_n)
   ggsave(
     filename = filename_volcano,
     plot = volcano,
@@ -433,7 +439,7 @@ dge <- function(counts, meta, design, filename, filename_volcano) {
     width = 15,
     dpi = 600
   )
-  
+
   return(resOrdered)
 }
 ```
@@ -1231,9 +1237,8 @@ names(enrichr_results) <- sapply(names(enrichr_results), clean_name)
 write.xlsx(enrichr_results, "wgcna/enrichr_significant_modules_batch8_9.xlsx")
 ```
 
-
-# Analysis for all FRDA samples across batches 1-9
-```{r, eval=FALSE}
+# Final samples across all batches for analysis
+```{r}
 # Removing samples from batches 8 and 9
 samples_batch_1_7 <- metadata_frda |> 
   filter(Batch %in% 1:7) |> 
@@ -1254,7 +1259,10 @@ assayNames(vst_frda_all) <- "counts"
 expr_vst <- assay(vst_frda_all)
 covs <- model.matrix(~ Sex + Age + Condition, data = metadata_frda_all)
 expr_rb <- limma::removeBatchEffect(expr_vst, batch = metadata_frda_all$Batch, design = covs)
+```
 
+# Analysis for all FRDA samples across batches 1-9
+```{r, eval=FALSE}
 # PCA before and after removing batch effects
 before <- plot_pca(
   count_data_frda_all, 
@@ -2239,7 +2247,7 @@ dev.off()
 
 # Stratification of FRDA patients into different severity groups using consistent gene expression profiles
 
-```{r}
+```{r, eval=FALSE}
 # Filtering FRDA patients only
 frda_patients <- metadata_frda_all[metadata_frda_all$Condition == "Patient", ]
 
@@ -2344,7 +2352,6 @@ ggsave(
 
 # Stratification of FRDA patients into mild, moderate, and severe groups using the three severity scales
 # Composite severity index using all 3 scales (z-score each scale, then average)
-
 severity_df <- frda_patients |>
   transmute(
     SampleID = rownames(frda_patients),
@@ -2637,4 +2644,29 @@ writexl::write_xlsx(
   roc_results,
   "patient_stratification_prediction/patient_state/gene_level_ROC_control_vs_states.xlsx"
 )
+
+# Differential expression between each patient state and controls
+# DGE: Mild vs Control, Moderate vs Control, Severe vs Control
+dir.create("res/patient_state", recursive = TRUE, showWarnings = FALSE)
+dir.create("volcano_plot/patient_state", recursive = TRUE, showWarnings = FALSE)
+
+run_state_vs_control_dge <- function(state_label) {
+  keep <- !is.na(metadata_frda_all_ext$severity_4level) & metadata_frda_all_ext$severity_4level %in% c("Control", state_label)
+  meta_sub <- metadata_frda_all_ext[keep, ]
+  meta_sub$severity_4level <- factor(meta_sub$severity_4level, levels = c("Control", state_label))
+  count_sub <- count_data_frda_all[, rownames(meta_sub)]
+
+  dge(counts = count_sub,
+      meta = meta_sub,
+      design = ~ Batch + Sex + Age + severity_4level,
+      filename = paste0("res/patient_state/res_", state_label, "_vs_Control.xlsx"),
+      filename_volcano = paste0("volcano_plot/patient_state/volcano_", state_label, "_vs_Control.jpeg"),
+      lfc_threshold = 1,
+      padj_threshold = 0.05,
+      top_n = 10)
+}
+
+res_mild <- run_state_vs_control_dge("Mild")
+res_moderate <- run_state_vs_control_dge("Moderate")
+res_severe <- run_state_vs_control_dge("Severe")
 ```
