@@ -2090,7 +2090,6 @@ cyt <- exportNetworkToCytoscape(
 ```
 
 # Stable expression signatures across batches
-
 ```{r}
 comparison <- read_xlsx("res/comparison_batch8_9_1_7.xlsx", sheet = "Comparison")
 # Genes whose expression is consistent when comparing different batches
@@ -2246,7 +2245,6 @@ dev.off()
 ```
 
 # Stratification of FRDA patients into different severity groups using consistent gene expression profiles
-
 ```{r, eval=FALSE}
 # Filtering FRDA patients only
 frda_patients <- metadata_frda_all[metadata_frda_all$Condition == "Patient", ]
@@ -2515,6 +2513,125 @@ ggsave(
   device = "png",
   units = "in",
   height = 12,
+  width = 8,
+  dpi = 600
+)
+
+# Correlation between DD*GAA1 and severity groups
+# Expected: Severe > Moderate > Mild for DD*GAA1
+
+# Compute DD*GAA1 for patients
+corr_data <- frda_patients |>
+  rownames_to_column("SampleID") |>
+  filter(severity_group %in% c("Mild", "Moderate", "Severe")) |>
+  mutate(
+    DD_num = as.numeric(DD),
+    GAA1_num = as.numeric(GAA1),
+    DD_x_GAA1 = DD_num * GAA1_num,
+    severity_group = factor(severity_group, levels = c("Mild", "Moderate", "Severe"))
+  ) |>
+  select(SampleID, severity_group, DD_num, GAA1_num, DD_x_GAA1) |>
+  filter(!is.na(DD_x_GAA1))
+
+# Statistical test: Kruskal-Wallis (non-parametric, handles non-normal distributions)
+kruskal_test <- kruskal.test(DD_x_GAA1 ~ severity_group, data = corr_data)
+print(kruskal_test)
+
+# Pairwise comparisons (Wilcoxon rank-sum)
+pairwise_wilcox <- pairwise.wilcox.test(
+  corr_data$DD_x_GAA1,
+  corr_data$severity_group,
+  p.adjust.method = "BH"
+)
+print(pairwise_wilcox)
+
+pw_df <- as.data.frame(pairwise_wilcox$p.value) |>
+  tibble::rownames_to_column("group1") |>
+  pivot_longer(-group1, names_to = "group2", values_to = "p") |>
+  filter(!is.na(p))
+y_max <- max(corr_data$DD_x_GAA1, na.rm = TRUE)
+
+pw_df <- pw_df |>
+  mutate(
+    y.position = seq(y_max * 1.10, y_max * 1.25, length.out = n()),
+    p.label = paste0("p = ", signif(p, 3))
+  )
+
+# Boxplot: DD*GAA1 by severity group
+p_dd_gaa1 <- ggplot(corr_data, aes(x = severity_group, y = DD_x_GAA1, fill = severity_group)) +
+  geom_boxplot(outlier.shape = NA, alpha = 0.7) +
+  geom_jitter(width = 0.15, size = 1.5, alpha = 0.6, color = "black") +
+  stat_compare_means(
+    comparisons = list(c("Mild", "Moderate"), c("Moderate", "Severe"), c("Mild", "Severe")),
+    method = "wilcox.test"
+  ) +
+  scale_fill_manual(values = c(Mild = "#7ecc51", Moderate = "#F1A340", Severe = "#C93A5A")) +
+  theme_bw(base_size = 14) +
+  labs(
+    title = "DD × GAA1 by Severity Group",
+    subtitle = paste0("Kruskal-Wallis p = ", format(kruskal_test$p.value, digits = 3)),
+    x = "Severity Group",
+    y = "DD × GAA1",
+    fill = "Group"
+  ) +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold"),
+    plot.subtitle = element_text(hjust = 0.5),
+    legend.position = "none",
+    panel.grid.minor = element_blank()
+  )
+
+# Add wilcox p-values to each group comparison
+p_dd_gaa1 <- p_dd_gaa1 +
+  stat_pvalue_manual(
+    pw_df,
+    label = "p.label",
+    xmin = "group1",
+    xmax = "group2",
+    y.position = "y.position",
+    tip.length = 0.01,
+    size = 4
+  )
+
+print(p_dd_gaa1)
+
+ggsave(
+  "patient_stratification_prediction/patient_stratify/DD_GAA1_by_severity.png",
+  plot = p_dd_gaa1,
+  device = "png",
+  units = "in",
+  height = 6,
+  width = 8,
+  dpi = 600
+)
+
+# Scatter plot: DD vs GAA1 colored by severity
+p_scatter <- ggplot(corr_data, aes(x = GAA1_num, y = DD_num, color = severity_group)) +
+  geom_point(size = 2.5, alpha = 0.7) +
+  scale_color_manual(values = c(Mild = "#7ecc51", Moderate = "#F1A340", Severe = "#C93A5A")) +
+  theme_bw(base_size = 14) +
+  labs(
+    title = "Disease Duration vs GAA1 Repeat Length",
+    subtitle = "Colored by severity group",
+    x = "GAA1 Repeat Length",
+    y = "Disease Duration (years)",
+    color = "Severity Group"
+  ) +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold"),
+    plot.subtitle = element_text(hjust = 0.5),
+    legend.position = "right",
+    panel.grid.minor = element_blank()
+  )
+
+print(p_scatter)
+
+ggsave(
+  "patient_stratification_prediction/patient_stratify/DD_vs_GAA1_scatter.png",
+  plot = p_scatter,
+  device = "png",
+  units = "in",
+  height = 6,
   width = 8,
   dpi = 600
 )
