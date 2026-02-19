@@ -2561,10 +2561,6 @@ pw_df <- pw_df |>
 p_dd_gaa1 <- ggplot(corr_data, aes(x = severity_group, y = DD_x_GAA1, fill = severity_group)) +
   geom_boxplot(outlier.shape = NA, alpha = 0.7) +
   geom_jitter(width = 0.15, size = 1.5, alpha = 0.6, color = "black") +
-  stat_compare_means(
-    comparisons = list(c("Mild", "Moderate"), c("Moderate", "Severe"), c("Mild", "Severe")),
-    method = "wilcox.test"
-  ) +
   scale_fill_manual(values = c(Mild = "#7ecc51", Moderate = "#F1A340", Severe = "#C93A5A")) +
   theme_bw(base_size = 14) +
   labs(
