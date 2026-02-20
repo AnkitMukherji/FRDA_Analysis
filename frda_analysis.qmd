@@ -2249,21 +2249,21 @@ dev.off()
 # Filtering FRDA patients only
 frda_patients <- metadata_frda_all[metadata_frda_all$Condition == "Patient", ]
 
-# Converting severity scales to numeric
-frda_patients$FSA_scale_num <- as.numeric(frda_patients$`FSA scale`)
-frda_patients$mFARS_total_num <- as.numeric(frda_patients$`mFARS total`)
-frda_patients$mFARS_USS_num <- as.numeric(frda_patients$`mFARS USS`)
-
 # Removing patients with heterozygous repeat length and rerun everything
 frda_patients_hom <- metadata_frda_all[metadata_frda_all$GAA1 > unique(metadata_frda_all$GAA1[metadata_frda_all$Condition == "Control"]), ]
 
+# Converting severity scales to numeric
+frda_patients_hom$FSA_scale_num <- as.numeric(frda_patients_hom$`FSA scale`)
+frda_patients_hom$mFARS_total_num <- as.numeric(frda_patients_hom$`mFARS total`)
+frda_patients_hom$mFARS_USS_num <- as.numeric(frda_patients_hom$`mFARS USS`)
+
 # Total patients with data for each scale
-n_fsa <- sum(!is.na(frda_patients$FSA_scale_num))
-n_mfars_total <- sum(!is.na(frda_patients$mFARS_total_num))
-n_mfars_uss <- sum(!is.na(frda_patients$mFARS_USS_num))
+n_fsa <- sum(!is.na(frda_patients_hom$FSA_scale_num))
+n_mfars_total <- sum(!is.na(frda_patients_hom$mFARS_total_num))
+n_mfars_uss <- sum(!is.na(frda_patients_hom$mFARS_USS_num))
 
 # Histogram for FSA scale
-p1 <- ggplot(frda_patients, aes(x = FSA_scale_num)) +
+p1 <- ggplot(frda_patients_hom, aes(x = FSA_scale_num)) +
   geom_histogram(bins = 20, fill = "#3B8BC2", color = "black", alpha = 0.7) +
   stat_bin(
     bins = 20,
@@ -2288,7 +2288,7 @@ p1 <- ggplot(frda_patients, aes(x = FSA_scale_num)) +
   )
 
 # Histogram for mFARS total
-p2 <- ggplot(frda_patients, aes(x = mFARS_total_num)) +
+p2 <- ggplot(frda_patients_hom, aes(x = mFARS_total_num)) +
   geom_histogram(bins = 20, fill = "#C93A5A", color = "black", alpha = 0.7) +
   stat_bin(
     bins = 20,
@@ -2313,7 +2313,7 @@ p2 <- ggplot(frda_patients, aes(x = mFARS_total_num)) +
   )
 
 # Histogram for mFARS USS
-p3 <- ggplot(frda_patients, aes(x = mFARS_USS_num)) +
+p3 <- ggplot(frda_patients_hom, aes(x = mFARS_USS_num)) +
   geom_histogram(bins = 20, fill = "#7ecc51", color = "black", alpha = 0.7) +
   stat_bin(
     bins = 20,
@@ -2342,7 +2342,7 @@ combined_hist <- p1 / p2 / p3
 
 # Save combined plot
 ggsave(
-  "patient_stratification_prediction/patient_stratify/severity_scales_histograms.png",
+  "patient_stratification_prediction/patient_stratify/severity_scales_histograms_hom_patients.png",
   plot = combined_hist,
   device = "png",
   units = "in",
@@ -2353,9 +2353,9 @@ ggsave(
 
 # Stratification of FRDA patients into mild, moderate, and severe groups using the three severity scales
 # Composite severity index using all 3 scales (z-score each scale, then average)
-severity_df <- frda_patients |>
+severity_df <- frda_patients_hom |>
   transmute(
-    SampleID = rownames(frda_patients),
+    SampleID = rownames(frda_patients_hom),
     FSA = FSA_scale_num,
     mFARS_total = mFARS_total_num,
     mFARS_USS = mFARS_USS_num
@@ -2391,9 +2391,9 @@ severity_df <- severity_df |>
     )
   )
 
-# Joining results back to frda_patients
-frda_patients <- frda_patients |>
-  mutate(SampleID = rownames(frda_patients)) |>
+# Joining results back to frda_patients_hom
+frda_patients_hom <- frda_patients_hom |>
+  mutate(SampleID = rownames(frda_patients_hom)) |>
   left_join(
     severity_df |> select(SampleID, severity_index, n_scales_present, severity_group),
     by = "SampleID"
@@ -2401,10 +2401,10 @@ frda_patients <- frda_patients |>
   column_to_rownames("SampleID")
 
 # Counts per group
-print(table(frda_patients$severity_group, useNA = "ifany"))
+print(table(frda_patients_hom$severity_group, useNA = "ifany"))
 
 # Counts among patients included in grouping (Mild/Moderate/Severe)
-group_n <- frda_patients |>
+group_n <- frda_patients_hom |>
   filter(severity_group %in% c("Mild", "Moderate", "Severe")) |>
   count(severity_group) |>
   mutate(severity_group = as.character(severity_group))
@@ -2417,7 +2417,7 @@ group_n_total <- sum(group_n_named)
 
 # Distribution of the composite index (cutoffs shown as dashed lines)
 p_index <- ggplot(
-  frda_patients |> filter(severity_group %in% c("Mild", "Moderate", "Severe")),
+  frda_patients_hom |> filter(severity_group %in% c("Mild", "Moderate", "Severe")),
   aes(x = severity_index, fill = severity_group)
 ) +
   geom_histogram(bins = 30, alpha = 0.7, color = "black") +
@@ -2450,7 +2450,7 @@ p_index <- ggplot(
   )
 
 ggsave(
-  "patient_stratification_prediction/patient_stratify/severity_index_histogram.png",
+  "patient_stratification_prediction/patient_stratify/severity_index_histogram_hom_patients.png",
   plot = p_index,
   device = "png",
   units = "in",
@@ -2460,7 +2460,7 @@ ggsave(
 )
 
 # Raw scale distributions by composite group
-long_scales <- frda_patients |>
+long_scales <- frda_patients_hom |>
   rownames_to_column("SampleID") |>
   filter(severity_group %in% c("Mild", "Moderate", "Severe")) |>
   select(
@@ -2511,7 +2511,7 @@ p_box <- ggplot(long_scales, aes(x = severity_group, y = Score, fill = severity_
   )
 
 ggsave(
-  "patient_stratification_prediction/patient_stratify/severity_scales_boxplots.png",
+  "patient_stratification_prediction/patient_stratify/severity_scales_boxplots_hom_patients.png",
   plot = p_box,
   device = "png",
   units = "in",
@@ -2520,11 +2520,9 @@ ggsave(
   dpi = 600
 )
 
-# Correlation between DD*GAA1 and severity groups
+# Correlation between DD, GAA1 and DD*GAA1 and severity groups
 # Expected: Severe > Moderate > Mild for DD*GAA1
-
-# Compute DD*GAA1 for patients
-corr_data <- frda_patients |>
+corr_data <- frda_patients_hom |>
   rownames_to_column("SampleID") |>
   filter(severity_group %in% c("Mild", "Moderate", "Severe")) |>
   mutate(
@@ -2534,74 +2532,108 @@ corr_data <- frda_patients |>
     severity_group = factor(severity_group, levels = c("Mild", "Moderate", "Severe"))
   ) |>
   select(SampleID, severity_group, DD_num, GAA1_num, DD_x_GAA1) |>
-  filter(!is.na(DD_x_GAA1))
+  filter(!is.na(severity_group))
 
-# Statistical test: Kruskal-Wallis (non-parametric, handles non-normal distributions)
-kruskal_test <- kruskal.test(DD_x_GAA1 ~ severity_group, data = corr_data)
-print(kruskal_test)
+analyze_metric_by_severity <- function(data, value_col, y_label, title_text, output_file) {
+  analysis_data <- data |>
+    transmute(SampleID, severity_group, value = {{ value_col }}) |>
+    filter(!is.na(value))
 
-# Pairwise comparisons (Wilcoxon rank-sum)
-pairwise_wilcox <- pairwise.wilcox.test(
-  corr_data$DD_x_GAA1,
-  corr_data$severity_group,
-  p.adjust.method = "BH"
+  # Statistical test: Kruskal-Wallis (non-parametric, handles non-normal distributions)
+  kruskal_test <- kruskal.test(value ~ severity_group, data = analysis_data)
+  print(kruskal_test)
+
+  # Pairwise comparisons (Wilcoxon rank-sum)
+  pairwise_wilcox <- pairwise.wilcox.test(
+    analysis_data$value,
+    analysis_data$severity_group,
+    p.adjust.method = "BH"
+  )
+  print(pairwise_wilcox)
+
+  pw_df <- as.data.frame(pairwise_wilcox$p.value) |>
+    tibble::rownames_to_column("group1") |>
+    pivot_longer(-group1, names_to = "group2", values_to = "p") |>
+    filter(!is.na(p))
+  y_max <- max(analysis_data$value, na.rm = TRUE)
+
+  if (nrow(pw_df) > 0) {
+    pw_df <- pw_df |>
+      mutate(
+        y.position = seq(y_max * 1.10, y_max * 1.25, length.out = n()),
+        p.label = paste0("p = ", signif(p, 3))
+      )
+  }
+
+  p <- ggplot(analysis_data, aes(x = severity_group, y = value, fill = severity_group)) +
+    geom_boxplot(outlier.shape = NA, alpha = 0.7) +
+    geom_jitter(width = 0.15, size = 1.5, alpha = 0.6, color = "black") +
+    scale_fill_manual(values = c(Mild = "#7ecc51", Moderate = "#F1A340", Severe = "#C93A5A")) +
+    theme_bw(base_size = 14) +
+    labs(
+      title = title_text,
+      subtitle = paste0("Kruskal-Wallis p = ", format(kruskal_test$p.value, digits = 3)),
+      x = "Severity Group",
+      y = y_label,
+      fill = "Group"
+    ) +
+    theme(
+      plot.title = element_text(hjust = 0.5, face = "bold"),
+      plot.subtitle = element_text(hjust = 0.5),
+      legend.position = "none",
+      panel.grid.minor = element_blank()
+    )
+
+  if (nrow(pw_df) > 0) {
+    p <- p +
+      stat_pvalue_manual(
+        pw_df,
+        label = "p.label",
+        xmin = "group1",
+        xmax = "group2",
+        y.position = "y.position",
+        tip.length = 0.01,
+        size = 4
+      )
+  }
+
+  print(p)
+
+  ggsave(
+    output_file,
+    plot = p,
+    device = "png",
+    units = "in",
+    height = 6,
+    width = 8,
+    dpi = 600
+  )
+
+  invisible(list(kruskal_test = kruskal_test, pairwise_wilcox = pairwise_wilcox, plot = p))
+}
+
+res_dd_gaa1 <- analyze_metric_by_severity(
+  corr_data,
+  DD_x_GAA1,
+  "DD x GAA1",
+  "DD x GAA1 by Severity Group",
+  "patient_stratification_prediction/patient_stratify/DD_GAA1_by_severity_hom_patients.png"
 )
-print(pairwise_wilcox)
 
-pw_df <- as.data.frame(pairwise_wilcox$p.value) |>
-  tibble::rownames_to_column("group1") |>
-  pivot_longer(-group1, names_to = "group2", values_to = "p") |>
-  filter(!is.na(p))
-y_max <- max(corr_data$DD_x_GAA1, na.rm = TRUE)
+res_gaa1 <- analyze_metric_by_severity(
+  corr_data,
+  GAA1_num,
+  "GAA1",
+  "GAA1 by Severity Group",
+  "patient_stratification_prediction/patient_stratify/GAA1_by_severity_hom_patients.png"
+)
 
-pw_df <- pw_df |>
-  mutate(
-    y.position = seq(y_max * 1.10, y_max * 1.25, length.out = n()),
-    p.label = paste0("p = ", signif(p, 3))
-  )
-
-# Boxplot: DD*GAA1 by severity group
-p_dd_gaa1 <- ggplot(corr_data, aes(x = severity_group, y = DD_x_GAA1, fill = severity_group)) +
-  geom_boxplot(outlier.shape = NA, alpha = 0.7) +
-  geom_jitter(width = 0.15, size = 1.5, alpha = 0.6, color = "black") +
-  scale_fill_manual(values = c(Mild = "#7ecc51", Moderate = "#F1A340", Severe = "#C93A5A")) +
-  theme_bw(base_size = 14) +
-  labs(
-    title = "DD × GAA1 by Severity Group",
-    subtitle = paste0("Kruskal-Wallis p = ", format(kruskal_test$p.value, digits = 3)),
-    x = "Severity Group",
-    y = "DD × GAA1",
-    fill = "Group"
-  ) +
-  theme(
-    plot.title = element_text(hjust = 0.5, face = "bold"),
-    plot.subtitle = element_text(hjust = 0.5),
-    legend.position = "none",
-    panel.grid.minor = element_blank()
-  )
-
-# Add wilcox p-values to each group comparison
-p_dd_gaa1 <- p_dd_gaa1 +
-  stat_pvalue_manual(
-    pw_df,
-    label = "p.label",
-    xmin = "group1",
-    xmax = "group2",
-    y.position = "y.position",
-    tip.length = 0.01,
-    size = 4
-  )
-
-print(p_dd_gaa1)
-
-ggsave(
-  "patient_stratification_prediction/patient_stratify/DD_GAA1_by_severity.png",
-  plot = p_dd_gaa1,
-  device = "png",
-  units = "in",
-  height = 6,
-  width = 8,
-  dpi = 600
+res_dd <- analyze_metric_by_severity(
+  corr_data,
+  DD_num,
+  "Disease Duration (years)",
+  "Disease Duration by Severity Group",
+  "patient_stratification_prediction/patient_stratify/DD_by_severity_hom_patients.png"
 )
 
 # Scatter plot: DD vs GAA1 colored by severity
@@ -2626,7 +2658,7 @@ p_scatter <- ggplot(corr_data, aes(x = GAA1_num, y = DD_num, color = severity_gr
 print(p_scatter)
 
 ggsave(
-  "patient_stratification_prediction/patient_stratify/DD_vs_GAA1_scatter.png",
+  "patient_stratification_prediction/patient_stratify/DD_vs_GAA1_scatter_hom_patients.png",
   plot = p_scatter,
   device = "png",
   units = "in",
@@ -2636,7 +2668,7 @@ ggsave(
 )
 
 # Gene-level ROC: Control vs Mild / Moderate / Severe
-severity_patients <- frda_patients |>
+severity_patients <- frda_patients_hom |>
   rownames_to_column("SampleID") |>
   select(SampleID, severity_group)
 
@@ -2755,10 +2787,9 @@ roc_summary <- roc_results |>
 print(roc_summary)
 
 # Save full per-gene ROC table
-dir.create("patient_stratification_prediction/patient_state", recursive = TRUE, showWarnings = FALSE)
 writexl::write_xlsx(
   roc_results,
-  "patient_stratification_prediction/patient_state/gene_level_ROC_control_vs_states.xlsx"
+  "patient_stratification_prediction/patient_stratify/gene_level_ROC_control_vs_states_hom_patients.xlsx"
 )
 
 # Differential expression between each patient state and controls
@@ -2775,8 +2806,8 @@ run_state_vs_control_dge <- function(state_label) {
   dge(counts = count_sub,
       meta = meta_sub,
       design = ~ Batch + Sex + Age + severity_4level,
-      filename = paste0("res/patient_state/res_", state_label, "_vs_Control.xlsx"),
-      filename_volcano = paste0("volcano_plot/patient_state/volcano_", state_label, "_vs_Control.jpeg"),
+      filename = paste0("res/patient_state/res_", state_label, "_vs_Control_hom_patient s.xlsx"),
+      filename_volcano = paste0("volcano_plot/patient_state/volcano_", state_label, "_vs_Control_hom_patients.jpeg"),
       lfc_threshold = 1,
       padj_threshold = 0.05,
       top_n = 10)
@@ -2788,8 +2819,7 @@ res_severe <- run_state_vs_control_dge("Severe")
 
 # Correlation between severity scales (FSA, mFARS total, mFARS USS)
 # Using Spearman correlation because clinical scales are often non-linear and ordinal in nature
-
-severity_corr_data <- frda_patients |>
+severity_corr_data <- frda_patients_hom |>
   as.data.frame() |>
   select(FSA_scale_num, mFARS_total_num, mFARS_USS_num) |>
   drop_na()
@@ -2817,7 +2847,7 @@ combined_severity_cor <- (p_fsa_mfars | p_fsa_uss | p_mfars_uss) +
                   theme = theme(plot.title = element_text(size = 18, face = "bold", hjust = 0.5)))
 
 ggsave(
-  "patient_stratification_prediction/patient_stratify/severity_scales_correlation.png",
+  "patient_stratification_prediction/patient_stratify/severity_scales_correlation_hom_patients.png",
   plot = combined_severity_cor,
   device = "png",
   units = "in",
@@ -2826,5 +2856,47 @@ ggsave(
   dpi = 600
 )
 
+# Level of FXN among patients in mild, moderate and severe
+fxn_severity_data <- data.frame(
+  SampleID = colnames(expr_rb_all),
+  FXN_expression = as.numeric(expr_rb_all["FXN", ])
+) |>
+  inner_join(
+    frda_patients_hom |> rownames_to_column("SampleID") |> select(SampleID, severity_group),
+    by = "SampleID"
+  ) |>
+  filter(severity_group %in% c("Mild", "Moderate", "Severe"))
 
+fxn_plot_data <- fxn_severity_data |>
+  arrange(severity_group, FXN_expression) |>
+  mutate(SampleID = factor(SampleID, levels = SampleID))
+
+p_fxn_indiv <- ggplot(fxn_plot_data, aes(x = SampleID, y = FXN_expression, fill = severity_group)) +
+  geom_col(alpha = 0.8) +
+  facet_wrap(~severity_group, scales = "free_x", ncol = 3) +
+  scale_fill_manual(values = c(Mild = "#7ecc51", Moderate = "#F1A340", Severe = "#C93A5A")) +
+  theme_bw(base_size = 12) +
+  theme(
+    axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1, size = 8),
+    legend.position = "none",
+    plot.title = element_text(hjust = 0.5, face = "bold"),
+    panel.grid.major.x = element_blank()
+  ) +
+  labs(
+    title = "Individual Patient FXN Expression by Severity",
+    x = "Patients (Sorted by Expression)",
+    y = "Batch-corrected VST Expression"
+  )
+
+print(p_fxn_indiv)
+
+ggsave(
+  "patient_stratification_prediction/patient_stratify/FXN_individual_by_severity_hom_patients.png",
+  plot = p_fxn_indiv,
+  device = "png",
+  units = "in",
+  height = 6,
+  width = 15,
+  dpi = 600
+)
 ```
