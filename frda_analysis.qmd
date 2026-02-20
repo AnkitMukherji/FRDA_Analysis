@@ -2254,6 +2254,9 @@ frda_patients$FSA_scale_num <- as.numeric(frda_patients$`FSA scale`)
 frda_patients$mFARS_total_num <- as.numeric(frda_patients$`mFARS total`)
 frda_patients$mFARS_USS_num <- as.numeric(frda_patients$`mFARS USS`)
 
+# Removing patients with heterozygous repeat length and rerun everything
+frda_patients_hom <- metadata_frda_all[metadata_frda_all$GAA1 > unique(metadata_frda_all$GAA1[metadata_frda_all$Condition == "Control"]), ]
+
 # Total patients with data for each scale
 n_fsa <- sum(!is.na(frda_patients$FSA_scale_num))
 n_mfars_total <- sum(!is.na(frda_patients$mFARS_total_num))
@@ -2782,4 +2785,46 @@ run_state_vs_control_dge <- function(state_label) {
 res_mild <- run_state_vs_control_dge("Mild")
 res_moderate <- run_state_vs_control_dge("Moderate")
 res_severe <- run_state_vs_control_dge("Severe")
+
+# Correlation between severity scales (FSA, mFARS total, mFARS USS)
+# Using Spearman correlation because clinical scales are often non-linear and ordinal in nature
+
+severity_corr_data <- frda_patients |>
+  as.data.frame() |>
+  select(FSA_scale_num, mFARS_total_num, mFARS_USS_num) |>
+  drop_na()
+
+# Helper function for scatter plots with correlation
+plot_severity_cor <- function(data, x, y, xlabel, ylabel) {
+  ggscatter(data, x = x, y = y,
+            add = "reg.line", conf.int = TRUE,
+            cor.coef = TRUE, 
+            cor.method = "spearman",
+            xlab = xlabel, ylab = ylabel,
+            title = paste(xlabel, "vs", ylabel),
+            color = "#2E4053", shape = 21, size = 3, fill = "#AED6F1", alpha = 0.7) +
+    theme_bw(base_size = 14) +
+    theme(plot.title = element_text(hjust = 0.5, face = "bold"))
+}
+
+p_fsa_mfars <- plot_severity_cor(severity_corr_data, "mFARS_total_num", "FSA_scale_num", "mFARS Total", "FSA Scale")
+p_fsa_uss   <- plot_severity_cor(severity_corr_data, "mFARS_USS_num", "FSA_scale_num", "mFARS USS", "FSA Scale")
+p_mfars_uss <- plot_severity_cor(severity_corr_data, "mFARS_total_num", "mFARS_USS_num", "mFARS Total", "mFARS USS")
+
+# Combine plots using patchwork
+combined_severity_cor <- (p_fsa_mfars | p_fsa_uss | p_mfars_uss) +
+  plot_annotation(title = "Correlation between FRDA Severity Scales",
+                  theme = theme(plot.title = element_text(size = 18, face = "bold", hjust = 0.5)))
+
+ggsave(
+  "patient_stratification_prediction/patient_stratify/severity_scales_correlation.png",
+  plot = combined_severity_cor,
+  device = "png",
+  units = "in",
+  height = 6,
+  width = 18,
+  dpi = 600
+)
+
+
 ```
