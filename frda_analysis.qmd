@@ -40,6 +40,10 @@ library(RColorBrewer)
 library(ggpubr)
 library(caret)
 library(pROC)
+library(psych)
+library(mclust)
+library(randomForest)
+library(e1071)
 ```
 
 # Load RDS Files
@@ -2404,15 +2408,13 @@ frda_patients_hom <- frda_patients_hom |>
 print(table(frda_patients_hom$severity_group, useNA = "ifany"))
 
 # Counts among patients included in grouping (Mild/Moderate/Severe)
-group_n <- frda_patients_hom |>
-  filter(severity_group %in% c("Mild", "Moderate", "Severe")) |>
-  count(severity_group) |>
-  mutate(severity_group = as.character(severity_group))
+sev <- frda_patients_hom$severity_group[
+  frda_patients_hom$severity_group %in% c("Mild", "Moderate", "Severe")
+]
 
-group_n_named <- setNames(group_n$n, group_n$severity_group)
+group_n_named <- table(sev)
 group_n_named <- group_n_named[c("Mild", "Moderate", "Severe")]
 group_n_named[is.na(group_n_named)] <- 0
-
 group_n_total <- sum(group_n_named)
 
 # Distribution of the composite index (cutoffs shown as dashed lines)
@@ -2899,4 +2901,136 @@ ggsave(
   width = 15,
   dpi = 600
 )
+
+# Stratifying patients into mild, moderate and severe using a probabilistic model
+
+## Extract Latent Clinical Severity
+
+# Filter for patients with complete clinical scores
+# Based on metadata_frda preparation earlier: "FSA scale", "mFARS total", "mFARS USS"
+clinical_vars <- c("FSA_scale_num", "mFARS_total_num", "mFARS_USS_num")
+patients_all_scores <- frda_patients_hom |> 
+  filter(!is.na(FSA_scale_num) & !is.na(mFARS_total_num) & !is.na(mFARS_USS_num))
+
+# Perform Factor Analysis to derive a latent severity score
+# This models shared disease burden rather than averaging
+fa_res <- fa(patients_all_scores[, clinical_vars], nfactors = 1, fm = "minres", scores = "regression")
+patients_all_scores$Latent_Severity <- as.numeric(fa_res$scores)
+
+# Visualize Latent Severity vs mFARS Total
+ggplot(patients_all_scores, aes(x = Latent_Severity, y = `mFARS total`)) +
+  geom_point() +
+  geom_smooth(method = "lm", color = "red") +
+  theme_bw() +
+  labs(title = "Latent Severity (FA) vs mFARS Total", 
+       subtitle = "Modeling latent disease burden",
+       x = "Latent Severity Score", y = "mFARS Total")
+
+## Identify Natural Severity States (GMM)
+
+# Apply Gaussian Mixture Modeling on the latent severity axis
+# BIC determines the optimal number of biological states
+gmm_res <- Mclust(patients_complete$Latent_Severity, G = 1:5)
+summary(gmm_res)
+
+# Plot BIC for model selection justification
+plot(gmm_res, what = "BIC")
+
+# Assign clusters and relabel them as Mild, Moderate, Severe
+patients_complete$GMM_Cluster <- factor(gmm_res$classification)
+
+# Ensure alphabetical/factor order matches severity (Mild < Moderate < Severe)
+cluster_means <- aggregate(Latent_Severity ~ GMM_Cluster, data = patients_complete, mean)
+cluster_order <- order(cluster_means$Latent_Severity)
+label_map <- c("Mild", "Moderate", "Severe")[1:length(cluster_order)]
+
+patients_complete$Severity_State <- factor(patients_complete$GMM_Cluster, 
+                                            levels = cluster_order, 
+                                            labels = label_map)
+
+# Visualize GMM Density Clusters
+ggplot(patients_complete, aes(x = Latent_Severity, fill = Severity_State)) +
+  geom_density(alpha = 0.5) +
+  theme_bw() +
+  labs(title = "Stage 3: Natural Severity States via GMM", 
+       x = "Latent Severity Score", y = "Density") +
+  scale_fill_manual(values = c("Mild" = "green3", "Moderate" = "orange", "Severe" = "red3"))
+```
+
+## Stage 4: Integrate Transcriptomic Structure
+```{r}
+# Perform PCA on batch-corrected RNA-seq data to capture major molecular gradients
+common_samples <- intersect(rownames(patients_complete), colnames(expr_rb))
+expr_complete <- expr_rb[, common_samples]
+
+pca_rna <- prcomp(t(expr_complete))
+patients_complete$RNA_PC1 <- pca_rna$x[common_samples, 1]
+patients_complete$RNA_PC2 <- pca_rna$x[common_samples, 2]
+
+# Dual-axis visualization: Clinical vs Transcriptomic
+ggplot(patients_complete, aes(x = Latent_Severity, y = RNA_PC1, color = Severity_State)) +
+  geom_point(size = 4, alpha = 0.8) +
+  theme_bw() +
+  labs(title = "Stage 4: Clinical-Transcriptomic Integration", 
+       subtitle = "Aligning clinical latent axis with major RNA variance",
+       x = "Latent Clinical Severity", y = "RNA PC1 (Molecular Staging)") +
+  scale_color_manual(values = c("Mild" = "green3", "Moderate" = "orange", "Severe" = "red3"))
+```
+
+## Stage 5: Machine Learning Classifier for All Patients
+```{r}
+# Train a classifier to predict severity for patients lacking complete clinical scores
+set.seed(42)
+
+# Features: Top 1000 variable genes from RNA-seq (to avoid overfitting)
+top_var_genes <- order(rowVars(expr_complete), decreasing = TRUE)[1:1000]
+train_data <- t(expr_complete[top_var_genes, ])
+train_labels <- patients_complete$Severity_State
+
+# Random Forest Model
+rf_model <- randomForest(x = train_data, y = train_labels, ntree = 1000, importance = TRUE)
+
+# Extend to all patients
+all_patients_meta <- metadata_frda %>% filter(Condition == "Patient")
+expr_all_patients <- expr_rb[top_var_genes, rownames(all_patients_meta)]
+
+pred_labels <- predict(rf_model, t(expr_all_patients))
+pred_probs <- predict(rf_model, t(expr_all_patients), type = "prob")
+
+all_patients_meta$Stratified_Severity <- pred_labels
+all_patients_meta <- cbind(all_patients_meta, as.data.frame(pred_probs))
+
+# Save the final results
+dir.create("patient_stratification_prediction", showWarnings = FALSE)
+saveRDS(all_patients_meta, "patient_stratification_prediction/final_severity_stratification.rds")
+write.xlsx(all_patients_meta, "patient_stratification_prediction/final_severity_stratification.xlsx", rowNames = TRUE)
+```
+
+## Stage 6 & 7: Validation and Biological Insights
+```{r}
+# 1. Clinical Validation: Monotonic increase of mFARS across predicted groups
+p_clin <- ggplot(all_patients_meta, aes(x = Stratified_Severity, y = `mFARS total`, fill = Stratified_Severity)) +
+  geom_boxplot(outlier.shape = NA, alpha = 0.7) +
+  geom_jitter(width = 0.2, alpha = 0.5) +
+  stat_compare_means(comparisons = list(c("Mild", "Moderate"), c("Moderate", "Severe"), c("Mild", "Severe"))) +
+  theme_bw() +
+  scale_fill_manual(values = c("Mild" = "green3", "Moderate" = "orange", "Severe" = "red3")) +
+  labs(title = "Clinical Validation", y = "mFARS Total Score", x = "Predicted Severity")
+
+# 2. Biological Validation: FXN Expression Gradient
+# Merging with previously calculated FXN expression data
+fxn_val_df <- all_patients_meta %>%
+  rownames_to_column("SampleID") %>%
+  left_join(data_fxn %>% select(SampleID, FXN_expression), by = "SampleID")
+
+p_bio <- ggplot(fxn_val_df, aes(x = Stratified_Severity, y = FXN_expression, fill = Stratified_Severity)) +
+  geom_boxplot(outlier.shape = NA, alpha = 0.7) +
+  geom_jitter(width = 0.2, alpha = 0.5) +
+  theme_bw() +
+  scale_fill_manual(values = c("Mild" = "green3", "Moderate" = "orange", "Severe" = "red3")) +
+  labs(title = "Biological Validation", y = "FXN Expression (VST)", x = "Predicted Severity")
+
+(p_clin | p_bio)
+
+ggsave("patient_stratification_prediction/validation_summary.png", width = 14, height = 6)
 ```
