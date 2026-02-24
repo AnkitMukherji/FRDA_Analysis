@@ -1723,19 +1723,19 @@ dev.off()
 metadata_frda_wgcna$Condition_0_1 <- ifelse(metadata_frda_wgcna$Condition == "Control", 0, 1)
 metadata_frda_wgcna$`DD x GAA1` <- as.numeric(metadata_frda_wgcna$DD) * as.numeric(metadata_frda_wgcna$GAA1)
 
-col_to_fill_zero <- c("HCM", "DD", "DD x GAA1")
+col_to_fill_zero <- c("HCM", "DD", "DD x GAA1", "FSA scale", "mFARS total", "mFARS USS")
 metadata_frda_wgcna[col_to_fill_zero] <- lapply(metadata_frda_wgcna[col_to_fill_zero], function(x) {
   x[is.na(x)] <- 0
   return(x)
 })
 
-col_to_num_convert <- c("HCM", "DD", "DD x GAA1")
+col_to_num_convert <- c("HCM", "DD", "DD x GAA1", "FSA scale", "mFARS total", "mFARS USS")
 metadata_frda_wgcna[col_to_num_convert] <- lapply(metadata_frda_wgcna[col_to_num_convert], function(x) {
   as.numeric(as.character(x))
 })
 
 trait_data <- metadata_frda_wgcna |> 
-  select(Condition_0_1, HCM, GAA1, GAA2, DD, `DD x GAA1`)
+  select(Condition_0_1, HCM, GAA1, GAA2, DD, `DD x GAA1`, `FSA scale`, `mFARS total`, `mFARS USS`)
 
 nSamples <- nrow(norm_count_data)
 nGenes <- ncol(norm_count_data)
