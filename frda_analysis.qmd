@@ -1,7 +1,13 @@
 ---
 title: "RNA-seq FRDA Analysis Pipeline"
 author: "Ankit Mukherjee"
-format: html
+format: 
+  html:
+    toc: true
+    toc-depth: 3
+    code-fold: true
+    theme: cosmo
+    self-contained: true
 ---
 
 # Load Libraries
@@ -32,6 +38,7 @@ library(msigdbr)
 library(enrichplot)
 library(org.Hs.eg.db)
 library(ComplexHeatmap)
+library(circlize)
 library(WGCNA)
 library(rstatix)
 library(gridExtra)
@@ -2955,10 +2962,8 @@ ggplot(patients_complete, aes(x = Latent_Severity, fill = Severity_State)) +
   labs(title = "Stage 3: Natural Severity States via GMM", 
        x = "Latent Severity Score", y = "Density") +
   scale_fill_manual(values = c("Mild" = "green3", "Moderate" = "orange", "Severe" = "red3"))
-```
 
 ## Stage 4: Integrate Transcriptomic Structure
-```{r}
 # Perform PCA on batch-corrected RNA-seq data to capture major molecular gradients
 common_samples <- intersect(rownames(patients_complete), colnames(expr_rb))
 expr_complete <- expr_rb[, common_samples]
@@ -2975,10 +2980,8 @@ ggplot(patients_complete, aes(x = Latent_Severity, y = RNA_PC1, color = Severity
        subtitle = "Aligning clinical latent axis with major RNA variance",
        x = "Latent Clinical Severity", y = "RNA PC1 (Molecular Staging)") +
   scale_color_manual(values = c("Mild" = "green3", "Moderate" = "orange", "Severe" = "red3"))
-```
 
 ## Stage 5: Machine Learning Classifier for All Patients
-```{r}
 # Train a classifier to predict severity for patients lacking complete clinical scores
 set.seed(42)
 
@@ -2991,7 +2994,7 @@ train_labels <- patients_complete$Severity_State
 rf_model <- randomForest(x = train_data, y = train_labels, ntree = 1000, importance = TRUE)
 
 # Extend to all patients
-all_patients_meta <- metadata_frda %>% filter(Condition == "Patient")
+all_patients_meta <- metadata_frda |>filter(Condition == "Patient")
 expr_all_patients <- expr_rb[top_var_genes, rownames(all_patients_meta)]
 
 pred_labels <- predict(rf_model, t(expr_all_patients))
@@ -3004,10 +3007,8 @@ all_patients_meta <- cbind(all_patients_meta, as.data.frame(pred_probs))
 dir.create("patient_stratification_prediction", showWarnings = FALSE)
 saveRDS(all_patients_meta, "patient_stratification_prediction/final_severity_stratification.rds")
 write.xlsx(all_patients_meta, "patient_stratification_prediction/final_severity_stratification.xlsx", rowNames = TRUE)
-```
 
 ## Stage 6 & 7: Validation and Biological Insights
-```{r}
 # 1. Clinical Validation: Monotonic increase of mFARS across predicted groups
 p_clin <- ggplot(all_patients_meta, aes(x = Stratified_Severity, y = `mFARS total`, fill = Stratified_Severity)) +
   geom_boxplot(outlier.shape = NA, alpha = 0.7) +
@@ -3019,9 +3020,9 @@ p_clin <- ggplot(all_patients_meta, aes(x = Stratified_Severity, y = `mFARS tota
 
 # 2. Biological Validation: FXN Expression Gradient
 # Merging with previously calculated FXN expression data
-fxn_val_df <- all_patients_meta %>%
-  rownames_to_column("SampleID") %>%
-  left_join(data_fxn %>% select(SampleID, FXN_expression), by = "SampleID")
+fxn_val_df <- all_patients_meta |>
+  rownames_to_column("SampleID") |>
+  left_join(data_fxn |>select(SampleID, FXN_expression), by = "SampleID")
 
 p_bio <- ggplot(fxn_val_df, aes(x = Stratified_Severity, y = FXN_expression, fill = Stratified_Severity)) +
   geom_boxplot(outlier.shape = NA, alpha = 0.7) +
@@ -3033,4 +3034,181 @@ p_bio <- ggplot(fxn_val_df, aes(x = Stratified_Severity, y = FXN_expression, fil
 (p_clin | p_bio)
 
 ggsave("patient_stratification_prediction/validation_summary.png", width = 14, height = 6)
+```
+
+# Correlation of gene expression profiles with severity and decoding patient trajectories
+```{r}
+enableWGCNAThreads()
+dds <- readRDS("dds_frda_all_ensg_removed.rds")
+dds_patient <- dds[, (dds$Condition == "Patient") & (dds$GAA1 > dds$GAA1[dds$Condition == "Control"][1]) & (!is.na(dds$GAA1)) & (!is.na(dds$DD)) & (!is.na(dds$`FSA scale`)) & (!is.na(dds$`mFARS total`)) & (!is.na(dds$`mFARS USS`))]
+meta <- as.data.frame(colData(dds_patient))
+traits_of_interest <- c("FSA.scale", "mFARS.total", "mFARS.USS", "GAA1", "DD")
+for (trait in traits_of_interest) {
+    meta[[trait]] <- as.numeric(as.character(meta[[trait]]))
+}
+vsd <- vst(dds_patient, blind = TRUE)
+expr_vst <- assay(vsd)
+
+# Linear regression for each gene with each trait
+results_list <- list()
+
+for (trait in traits_of_interest) {
+
+    clean_samples <- complete.cases(meta[, c(trait, "Age", "Sex", "Batch")])
+
+    meta_sub <- meta[clean_samples, ]
+    expr_sub <- expr_vst[, clean_samples]
+
+    meta_sub$Batch <- droplevels(factor(meta_sub$Batch))
+    meta_sub$Sex   <- droplevels(factor(meta_sub$Sex))
+
+    design <- model.matrix(
+        as.formula(paste0("~ `", trait, "` + Age + Sex + Batch")),
+        data = meta_sub
+    )
+
+    if (qr(design)$rank < ncol(design)) {
+        message("Design matrix not full rank for trait: ", trait)
+        next
+    }
+
+    aw  <- arrayWeights(expr_sub, design)
+    fit <- lmFit(expr_sub, design, weights = aw)
+    fit <- eBayes(fit, robust = TRUE)
+
+    res <- topTable(fit, coef = trait, number = Inf) |> 
+      rownames_to_column("gene_names") |> 
+      as_tibble()
+    results_list[[trait]] <- res
+}
+
+# WGCNA Module-Trait Correlation (bicor)
+wgcna_res <- readRDS("wgcna/FRDA_All_Batches_ENSG_genes_removed/wgcna_frda_all_batch.rds")
+MEs <- wgcna_res$MEs
+
+MEs_patient <- MEs[rownames(meta), ]
+
+# Calculate bicor (Biweight midcorrelation)
+module_trait_cor <- bicor(MEs_patient, meta[, traits_of_interest], use = "p")
+module_trait_p <- corPvalueStudent(module_trait_cor, nrow(MEs_patient))
+
+wgcna_cor_df <- as.data.frame(module_trait_cor) |>rownames_to_column("Module")
+wgcna_p_df <- as.data.frame(module_trait_p) |>rownames_to_column("Module")
+
+write_xlsx(
+    c(results_list, list(WGCNA_Cor = wgcna_cor_df, WGCNA_P = wgcna_p_df)),
+    "patient_stratification_prediction/patient_stratify/regression_severity_scores.xlsx"
+)
+
+# Top genes from all correlations
+all_res <- lapply(traits_of_interest, function(tr) {
+  read_excel("patient_stratification_prediction/patient_stratify/regression_severity_scores.xlsx", sheet = tr) |>
+    mutate(Trait = tr) |>
+    select(gene_names, logFC, P.Value, adj.P.Val, Trait)
+})
+
+top_table <- bind_rows(all_res) |>
+  group_by(gene_names) |>
+  filter(adj.P.Val == min(adj.P.Val)) |>
+  ungroup() |>
+  arrange(adj.P.Val) |>
+  head(50)
+
+write_xlsx(top_table, "patient_stratification_prediction/patient_stratify/top_genes_from_regression.xlsx")
+
+# Plots
+# Trend of gene expression with severity
+plot_trends <- function(trait) {
+
+    # Extract expression data for top genes
+    plot_data_list <- list()
+    for (gene in top_table$gene_names) {
+        if (gene %in% rownames(expr_vst)) {
+            df <- data.frame(
+                Score = meta[[trait]],
+                Expression = expr_vst[gene, ],
+                Gene = gene
+            ) |> drop_na()
+            plot_data_list[[gene]] <- df
+        }
+    }
+
+    all_plot_data <- bind_rows(plot_data_list)
+
+    p <- ggplot(all_plot_data, aes(x = Score, y = Expression)) +
+        geom_point(alpha = 0.5, color = "#2166ac") +
+        geom_smooth(method = "lm", color = "#b2182b", fill = "#f4a582", alpha = 0.2) +
+        facet_wrap(~Gene, scales = "free_y") +
+        theme_bw() +
+        labs(
+            title = paste("Expression Trends vs", trait),
+            x = trait,
+            y = "VST Normalized Expression"
+        ) +
+        theme(strip.background = element_rect(fill = "white"))
+
+    return(p)
+}
+
+p1 <- plot_trends("FSA.scale")
+p2 <- plot_trends("mFARS.total")
+
+ggsave("patient_stratification_prediction/patient_stratify/expression_trends_FSA.png", p1, width = 12, height = 8, dpi = 300)
+ggsave("patient_stratification_prediction/patient_stratify/expression_trends_mFARS.png", p2, width = 12, height = 8, dpi = 300)
+
+# Volcano plots for each trait
+plot_volcano_cor <- function(trait_name) {
+  df <- read_excel("patient_stratification_prediction/patient_stratify/regression_severity_scores.xlsx", sheet = trait_name)
+  
+  df <- df |> 
+    mutate(negLogP = -log10(P.Value),
+           sig = adj.P.Val < 0.05)
+  
+  top_n <- 15
+  top_genes <- df |> arrange(P.Value) |> head(top_n)
+  
+  ggplot(df, aes(x = logFC, y = negLogP)) +
+    geom_point(aes(color = sig), alpha = 0.4) +
+    geom_text_repel(data = top_genes, aes(label = gene_names), size = 3, max.overlaps = 20) +
+    scale_color_manual(values = c("TRUE" = "#e41a1c", "FALSE" = "grey70")) +
+    theme_minimal() +
+    labs(title = paste("Association with", trait_name),
+         subtitle = "Robust linear regression (limma)",
+         x = "Coefficient (Expression change per unit trait)",
+         y = "-log10(p-value)") +
+    theme(legend.position = "none")
+
+    ggsave(paste0("patient_stratification_prediction/patient_stratify/volcano_plots_", trait_name, ".png"), width = 10, height = 8)
+}
+
+volcano_plots <- lapply(traits_of_interest, plot_volcano_cor)
+
+# Heatmap of WGCNA module-trait correlations
+cor_mat <- as.matrix(wgcna_cor_df[,-1])
+rownames(cor_mat) <- wgcna_cor_df$Module
+p_mat <- as.matrix(wgcna_p_df[,-1])
+rownames(p_mat) <- wgcna_p_df$Module
+
+# Signif stars
+text_mat <- matrix(ifelse(p_mat < 0.001, "***", 
+                          ifelse(p_mat < 0.01, "**", 
+                                 ifelse(p_mat < 0.05, "*", ""))), 
+                   nrow = nrow(p_mat))
+
+col_fun = colorRamp2(c(-1, 0, 1), c("#2166ac", "white", "#b2182b"))
+
+pdf("patient_stratification_prediction/patient_stratify/wgcna_module_trait_correlation.pdf", width = 10, height = 8)
+Heatmap(cor_mat, 
+        name = "Bicor", 
+        col = col_fun,
+        cluster_rows = TRUE, 
+        cluster_columns = FALSE,
+        row_names_side = "left",
+        column_names_rot = 45,
+        cell_fun = function(j, i, x, y, width, height, fill) {
+          grid.text(text_mat[i, j], x, y, gp = gpar(fontsize = 15, fontface = "bold"))
+        },
+        column_title = "WGCNA Module - Clinical Trait Correlation (bicor)",
+        rect_gp = gpar(col = "white", lwd = 1))
+dev.off()
 ```
