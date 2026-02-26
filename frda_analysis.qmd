@@ -13,6 +13,7 @@ format:
 # Load Libraries
 ```{r}
 library(DESeq2)
+library(edgeR)
 library(limma)
 library(sva)
 library(tidyverse)
@@ -51,6 +52,7 @@ library(psych)
 library(mclust)
 library(randomForest)
 library(e1071)
+library(splines)
 ```
 
 # Load RDS Files
@@ -3038,51 +3040,121 @@ ggsave("patient_stratification_prediction/validation_summary.png", width = 14, h
 
 # Correlation of gene expression profiles with severity and decoding patient trajectories
 ```{r}
-enableWGCNAThreads()
 dds <- readRDS("dds_frda_all_ensg_removed.rds")
 dds_patient <- dds[, (dds$Condition == "Patient") & (dds$GAA1 > dds$GAA1[dds$Condition == "Control"][1]) & (!is.na(dds$GAA1)) & (!is.na(dds$DD)) & (!is.na(dds$`FSA scale`)) & (!is.na(dds$`mFARS total`)) & (!is.na(dds$`mFARS USS`))]
 meta <- as.data.frame(colData(dds_patient))
+counts <- as.data.frame(assay(dds_patient))
 traits_of_interest <- c("FSA.scale", "mFARS.total", "mFARS.USS", "GAA1", "DD")
 for (trait in traits_of_interest) {
     meta[[trait]] <- as.numeric(as.character(meta[[trait]]))
 }
+
 vsd <- vst(dds_patient, blind = TRUE)
 expr_vst <- assay(vsd)
 
-# Linear regression for each gene with each trait
-results_list <- list()
+msig_hallmark <- msigdbr(species = "Homo sapiens", collection = "H")
 
+gene_sets <- split(msig_hallmark$gene_symbol,
+                   msig_hallmark$gs_name)
+
+# Linear regression and non-linear trends for each gene with each trait
+all_linear_results  <- list()
+all_spline_results  <- list()
+all_camera_results  <- list()
+
+# Question: Is gene expression significantly associated with increasing severity score?
 for (trait in traits_of_interest) {
 
-    clean_samples <- complete.cases(meta[, c(trait, "Age", "Sex", "Batch")])
+  cat("\nProcessing trait:", trait, "\n")
 
-    meta_sub <- meta[clean_samples, ]
-    expr_sub <- expr_vst[, clean_samples]
+  clean_samples <- complete.cases(meta[, trait])
+  meta_sub   <- meta[clean_samples, ]
+  counts_sub <- counts[, clean_samples]
 
-    meta_sub$Batch <- droplevels(factor(meta_sub$Batch))
-    meta_sub$Sex   <- droplevels(factor(meta_sub$Sex))
+  # Center trait
+  meta_sub[[trait]] <- scale(meta_sub[[trait]], center = TRUE, scale = FALSE)
 
-    design <- model.matrix(
-        as.formula(paste0("~ `", trait, "` + Age + Sex + Batch")),
-        data = meta_sub
-    )
+  # Build DGE
+  dge <- DGEList(counts = counts_sub)
+  cpm_vals <- cpm(dge)
+  keep <- rowSums(cpm_vals > 1) >= 10
+  dge  <- dge[keep, , keep.lib.sizes = FALSE]
+  dge  <- calcNormFactors(dge)
 
-    if (qr(design)$rank < ncol(design)) {
-        message("Design matrix not full rank for trait: ", trait)
-        next
-    }
+  # Linear Model
+  design_linear <- model.matrix(
+    as.formula(paste0("~ `", trait, "`")),
+    data = meta_sub
+  )
 
-    aw  <- arrayWeights(expr_sub, design)
-    fit <- lmFit(expr_sub, design, weights = aw)
-    fit <- eBayes(fit, robust = TRUE)
+  v_linear <- voom(dge, design_linear)
 
-    res <- topTable(fit, coef = trait, number = Inf) |> 
-      rownames_to_column("gene_names") |> 
-      as_tibble()
-    results_list[[trait]] <- res
+  fit_linear <- lmFit(v_linear, design_linear)
+  fit_linear <- eBayes(fit_linear, robust = TRUE)
+
+  res_linear <- topTable(
+    fit_linear,
+    coef = trait,
+    number = Inf
+  ) |> 
+    rownames_to_column("gene")
+
+  all_linear_results[[trait]] <- res_linear
+
+  # Spline Model
+  design_spline <- model.matrix(
+    as.formula(paste0("~ ns(`", trait, "`, df=3)")),
+    data = meta_sub
+  )
+
+  v_spline <- voom(dge, design_spline)
+
+  fit_spline <- lmFit(v_spline, design_spline)
+  fit_spline <- eBayes(fit_spline, robust = TRUE)
+
+  spline_terms <- grep("^ns", colnames(design_spline), value = TRUE)
+
+  res_spline <- topTable(
+    fit_spline,
+    coef = spline_terms,
+    number = Inf,
+    sort.by = "F"
+  ) |> 
+    rownames_to_column("gene")
+
+  all_spline_results[[trait]] <- res_spline
+
+  # Pathway Analysis (camera)
+  camera_res <- camera(
+    v_linear,
+    index = gene_sets,
+    design = design_linear,
+    contrast = trait
+  )
+
+  camera_res <- as.data.frame(camera_res)
+  camera_res$pathway <- rownames(camera_res)
+
+  all_camera_results[[trait]] <- camera_res
+
+  cat("Significant genes with linear regression (p-value<0.05):",
+      sum(res_linear$P.Value < 0.05), "\n")
+
+  cat("Significant genes with linear regression (FDR<0.05):",
+      sum(res_linear$adj.P.Val < 0.05), "\n")
+
+  cat("Significant genes with splines (p-value<0.05):",
+      sum(res_spline$P.Value < 0.05), "\n")
+      
+  cat("Significant genes with splines (FDR<0.05):",
+      sum(res_spline$adj.P.Val < 0.05), "\n")
+
+  cat("Significant pathways (FDR<0.05):",
+      sum(camera_res$FDR < 0.05), "\n")
 }
 
 # WGCNA Module-Trait Correlation (bicor)
+enableWGCNAThreads()
 wgcna_res <- readRDS("wgcna/FRDA_All_Batches_ENSG_genes_removed/wgcna_frda_all_batch.rds")
 MEs <- wgcna_res$MEs
 
@@ -3096,33 +3168,61 @@ wgcna_cor_df <- as.data.frame(module_trait_cor) |>rownames_to_column("Module")
 wgcna_p_df <- as.data.frame(module_trait_p) |>rownames_to_column("Module")
 
 write_xlsx(
-    c(results_list, list(WGCNA_Cor = wgcna_cor_df, WGCNA_P = wgcna_p_df)),
+    c(all_linear_results, list(WGCNA_Cor = wgcna_cor_df, WGCNA_P = wgcna_p_df)),
     "patient_stratification_prediction/patient_stratify/regression_severity_scores.xlsx"
 )
 
+write_xlsx(
+  all_spline_results, "patient_stratification_prediction/patient_stratify/spline_severity_scores.xlsx"
+)
+
+write_xlsx(
+  all_camera_results, "patient_stratification_prediction/patient_stratify/pathways_severity_scores.xlsx"
+)
+
 # Top genes from all correlations
-all_res <- lapply(traits_of_interest, function(tr) {
+all_res_linear <- lapply(traits_of_interest, function(tr) {
   read_excel("patient_stratification_prediction/patient_stratify/regression_severity_scores.xlsx", sheet = tr) |>
     mutate(Trait = tr) |>
-    select(gene_names, logFC, P.Value, adj.P.Val, Trait)
+    select(gene, logFC, P.Value, adj.P.Val, Trait)
 })
 
-top_table <- bind_rows(all_res) |>
-  group_by(gene_names) |>
-  filter(adj.P.Val == min(adj.P.Val)) |>
-  ungroup() |>
-  arrange(adj.P.Val) |>
-  head(50)
+all_res_non_linear <- lapply(traits_of_interest, function(tr) {
+  read_excel("patient_stratification_prediction/patient_stratify/spline_severity_scores.xlsx", sheet = tr) |>
+    mutate(Trait = tr) |>
+    select(gene, P.Value, adj.P.Val, Trait)
+})
 
-write_xlsx(top_table, "patient_stratification_prediction/patient_stratify/top_genes_from_regression.xlsx")
+top_table_linear <- bind_rows(all_res_linear) |>
+  group_by(Trait) |>
+  arrange(P.Value, .by_group = TRUE) |>
+  slice_head(n = 5) |>
+  ungroup()
+
+top_table_non_linear <- bind_rows(all_res_non_linear) |>
+  group_by(Trait) |>
+  arrange(P.Value, .by_group = TRUE) |>
+  slice_head(n = 5) |>
+  ungroup()
+
+top_genes_linear <- top_table_linear |>
+  pull(gene) |>
+  unique()
+
+top_genes_non_linear <- top_table_non_linear |>
+  pull(gene) |>
+  unique()
+
+final_genes <- c(top_genes_linear, top_genes_non_linear) |> unique()
 
 # Plots
 # Trend of gene expression with severity
+# Extract expression data for top genes
 plot_trends <- function(trait) {
 
     # Extract expression data for top genes
     plot_data_list <- list()
-    for (gene in top_table$gene_names) {
+    for (gene in final_genes) {
         if (gene %in% rownames(expr_vst)) {
             df <- data.frame(
                 Score = meta[[trait]],
@@ -3152,9 +3252,11 @@ plot_trends <- function(trait) {
 
 p1 <- plot_trends("FSA.scale")
 p2 <- plot_trends("mFARS.total")
+p3 <- plot_trends("GAA1")
 
 ggsave("patient_stratification_prediction/patient_stratify/expression_trends_FSA.png", p1, width = 12, height = 8, dpi = 300)
 ggsave("patient_stratification_prediction/patient_stratify/expression_trends_mFARS.png", p2, width = 12, height = 8, dpi = 300)
+ggsave("patient_stratification_prediction/patient_stratify/expression_trends_GAA1.png", p3, width = 12, height = 8, dpi = 300)
 
 # Volcano plots for each trait
 plot_volcano_cor <- function(trait_name) {
@@ -3169,7 +3271,7 @@ plot_volcano_cor <- function(trait_name) {
   
   ggplot(df, aes(x = logFC, y = negLogP)) +
     geom_point(aes(color = sig), alpha = 0.4) +
-    geom_text_repel(data = top_genes, aes(label = gene_names), size = 3, max.overlaps = 20) +
+    geom_text_repel(data = top_genes, aes(label = gene), size = 3, max.overlaps = 20) +
     scale_color_manual(values = c("TRUE" = "#e41a1c", "FALSE" = "grey70")) +
     theme_minimal() +
     labs(title = paste("Association with", trait_name),
@@ -3211,4 +3313,25 @@ Heatmap(cor_mat,
         column_title = "WGCNA Module - Clinical Trait Correlation (bicor)",
         rect_gp = gpar(col = "white", lwd = 1))
 dev.off()
+
+# Molecular severity score via PCA on top 500 variable genes
+gene_variances <- apply(expr_vst, 1, var)
+top500_genes <- names(sort(gene_variances, decreasing = TRUE))[1:500]
+expr_top500 <- t(expr_vst[top500_genes, ])
+
+pca <- prcomp(expr_top500, scale. = TRUE)
+
+meta_sub$Molecular_Severity_PC1 <- pca$x[,1]
+
+for (trait in traits_of_interest) {
+  cor_val <- cor(meta_sub$Molecular_Severity_PC1,
+                 meta_sub[[trait]],
+                 use="complete.obs")
+
+  cat("Correlation between PC1 and", trait, ":", cor_val, "\n")
+}
+
+write.csv(meta_sub,
+          "patient_stratification_prediction/patient_stratify/FRDA_molecular_severity_scores.csv",
+          row.names = FALSE)
 ```
