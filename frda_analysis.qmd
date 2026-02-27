@@ -1342,6 +1342,37 @@ dge_frda_all <- dge(counts = count_data_frda_all,
                     design = ~ Batch + Sex + Age + Condition,
                     filename = "res/res_all_frda_patients_vs_controls_ensg_removed.xlsx",
                     filename_volcano = "volcano_plot/volcano_all_frda_patients_vs_controls_ensg_removed.jpeg")
+
+# Differential expression analysis between patients with and without HCM
+metadata_frda_all <- colData(dds_frda_all) |> as.data.frame()
+count_data_frda_all <- assay(dds_frda_all) |> as.data.frame()
+
+metadata_frda_all$HCM[is.na(metadata_frda_all$HCM)] <- 0
+
+all(rownames(metadata_frda_all) == colnames(count_data_frda_all))
+dge_frda_hcm_non_hcm <- dge(counts = count_data_frda_all,
+                    meta = metadata_frda_all,
+                    design = ~ HCM + Batch + Sex + Age,
+                    filename = "res/res_all_frda_ensg_removed_hcm_non_hcm.xlsx",
+                    filename_volcano = "volcano_plot/volcano_all_frda_ensg_removed_hcm_non_hcm.jpeg",
+                    lfc_threshold = 1,
+                    padj_threshold = 0.05,
+                    top_n = 10)
+
+metadata_frda_all_patients <- metadata_frda_all[metadata_frda_all$Condition == "Patient", ]
+metadata_frda_all_patients$Condition <- droplevels(metadata_frda_all_patients$Condition)
+count_data_frda_all_patients <- count_data_frda_all[, rownames(metadata_frda_all_patients)]
+
+all(rownames(metadata_frda_all_patients) == colnames(count_data_frda_all_patients))
+dge_frda_patients_hcm_non_hcm <- dge(counts = count_data_frda_all_patients,
+                    meta = metadata_frda_all_patients,
+                    design = ~ HCM + Batch + Sex + Age,
+                    filename = "res/res_all_frda_patients_ensg_removed_hcm_non_hcm.xlsx",
+                    filename_volcano = "volcano_plot/volcano_all_frda_patients_ensg_removed_hcm_non_hcm.jpeg",
+                    lfc_threshold = 1,
+                    padj_threshold = 0.05,
+                    top_n = 10)
+
 # Volcano plot with lfc < -1 and lfc > 1 with padj < 0.05 highlighted
 res <- read_xlsx("res/res_all_frda_patients_vs_controls_ensg_removed.xlsx")
 vol_data <- res |>
