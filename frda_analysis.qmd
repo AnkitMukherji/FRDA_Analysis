@@ -2290,6 +2290,9 @@ dev.off()
 
 # Stratification of FRDA patients into different severity groups using consistent gene expression profiles
 ```{r, eval=FALSE}
+dds_frda_all <- readRDS("dds_frda_all_ensg_removed.rds")
+metadata_frda_all <- as.data.frame(colData(dds_frda_all))
+count_data_frda_all <- as.data.frame(assay(dds_frda_all))
 # Filtering FRDA patients only
 frda_patients <- metadata_frda_all[metadata_frda_all$Condition == "Patient", ]
 
@@ -2297,9 +2300,9 @@ frda_patients <- metadata_frda_all[metadata_frda_all$Condition == "Patient", ]
 frda_patients_hom <- metadata_frda_all[metadata_frda_all$GAA1 > unique(metadata_frda_all$GAA1[metadata_frda_all$Condition == "Control"]), ]
 
 # Converting severity scales to numeric
-frda_patients_hom$FSA_scale_num <- as.numeric(frda_patients_hom$`FSA scale`)
-frda_patients_hom$mFARS_total_num <- as.numeric(frda_patients_hom$`mFARS total`)
-frda_patients_hom$mFARS_USS_num <- as.numeric(frda_patients_hom$`mFARS USS`)
+frda_patients_hom$FSA_scale_num <- as.numeric(frda_patients_hom$FSA.scale)
+frda_patients_hom$mFARS_total_num <- as.numeric(frda_patients_hom$mFARS.total)
+frda_patients_hom$mFARS_USS_num <- as.numeric(frda_patients_hom$mFARS.USS)
 
 # Total patients with data for each scale
 n_fsa <- sum(!is.na(frda_patients_hom$FSA_scale_num))
@@ -2958,7 +2961,7 @@ fa_res <- fa(patients_all_scores[, clinical_vars], nfactors = 1, fm = "minres", 
 patients_all_scores$Latent_Severity <- as.numeric(fa_res$scores)
 
 # Visualize Latent Severity vs mFARS Total
-ggplot(patients_all_scores, aes(x = Latent_Severity, y = `mFARS total`)) +
+p <- ggplot(patients_all_scores, aes(x = Latent_Severity, y = mFARS.total)) +
   geom_point() +
   geom_smooth(method = "lm", color = "red") +
   theme_bw() +
