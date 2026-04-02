@@ -10,8 +10,10 @@
 # Important project files to keep
 !.gitignore
 !README.md
-!frda_analysis.qmd
+!analysis_scripts/
+!analysis_scripts/**
 !renv.lock
+!Dockerfile
 
 # Keep essential renv files for reproducibility
 !renv/
