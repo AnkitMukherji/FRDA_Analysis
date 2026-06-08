@@ -1,7 +1,6 @@
-# FRDA Analysis Pipeline - Utility Functions
-# Description: Centralized helper functions for RNA-seq analysis, plots, and modeling.
+# Centralized helper functions for RNA-seq analysis.
 
-# PREP
+# Metadata preprocessing
 prep_metadata <- function(meta, factor_cols = NULL, scale_cols = NULL) {
     library(dplyr)
     m <- meta
