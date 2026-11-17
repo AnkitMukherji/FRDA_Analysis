@@ -4,6 +4,10 @@ Research analysis of the blood transcriptomic landscape of **Friedreich ataxia (
 
 The repository contains R scripts for coding and non-coding RNA analyses. It complements the [cardiomyocyte project](https://github.com/AnkitMukherji/FRDA_Cardiomyopathy_Analysis), which examines cardiac involvement and differentiation stage.
 
+## Folder guides
+
+- [analysis scripts](analysis_scripts/README.md)
+
 ## Scientific questions
 
 - Which transcriptional changes distinguish patients and controls after accounting for technical variation?
